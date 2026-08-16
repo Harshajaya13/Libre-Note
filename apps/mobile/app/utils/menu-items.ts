@@ -91,15 +91,5 @@ export const MenuItemsList: SideMenuItem[] = [
     icon: "delete-outline",
     type: "side-menu-item"
   },
-  {
-    dataType: "note",
-    id: "Settings",
-    title: "Settings",
-    icon: "cog-outline",
-    onPress: () => {
-      Navigation.closeDrawer();
-      Navigation.navigate("Settings");
-    },
-    type: "side-menu-item"
-  }
+
 ];

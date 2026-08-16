@@ -208,15 +208,15 @@ export const settingsGroups: SettingSection[] = [
             return status === SubscriptionStatus.TRIAL
               ? strings.trialOnGoing(trialEndDate)
               : status === SubscriptionStatus.ACTIVE
-              ? strings.subRenewOn(expiryDate)
-              : status === SubscriptionStatus.CANCELED ||
-                status === SubscriptionStatus.PAUSED
-              ? strings.subEndsOn(expiryDate)
-              : status === SubscriptionStatus.EXPIRED
-              ? subscriptionDaysLeft.time < -3
-                ? strings.subEnded()
-                : strings.accountDowngradedIn(3)
-              : strings.neverHesitate();
+                ? strings.subRenewOn(expiryDate)
+                : status === SubscriptionStatus.CANCELED ||
+                  status === SubscriptionStatus.PAUSED
+                  ? strings.subEndsOn(expiryDate)
+                  : status === SubscriptionStatus.EXPIRED
+                    ? subscriptionDaysLeft.time < -3
+                      ? strings.subEnded()
+                      : strings.accountDowngradedIn(3)
+                    : strings.neverHesitate();
           }
 
           return strings.neverHesitate();
@@ -271,44 +271,7 @@ export const settingsGroups: SettingSection[] = [
         icon: "account-cog",
         description: strings.manageAccountDesc(),
         sections: [
-          {
-            id: "workspace-switcher",
-            name: "Switch Workspace",
-            icon: "view-dashboard-outline",
-            description: "Switch active profile workspace or create a new local workspace",
-            modifer: () => {
-              const { currentSpace, spaces, switchSpace, addSpace } = useUserStore.getState();
-              presentDialog({
-                title: "Switch Workspace",
-                paragraph: `Current Workspace: ${currentSpace}\nWorkspaces: ${spaces.join(", ")}\n\nEnter a new workspace name to create or switch:`,
-                input: true,
-                inputPlaceholder: "Workspace name (e.g. Work, Personal, Private)",
-                defaultValue: "",
-                positiveText: "Switch / Create",
-                negativeText: "Cancel",
-                positivePress: async (value) => {
-                  if (value && value.trim()) {
-                    addSpace(value.trim());
-                    ToastManager.show({
-                      heading: "Workspace Switched",
-                      message: `Switched to ${value.trim()} workspace`,
-                      type: "success"
-                    });
-                  } else {
-                    const nextIndex = (spaces.indexOf(currentSpace) + 1) % spaces.length;
-                    const nextSpace = spaces[nextIndex] || "Personal";
-                    switchSpace(nextSpace);
-                    ToastManager.show({
-                      heading: "Workspace Switched",
-                      message: `Switched to ${nextSpace} workspace`,
-                      type: "success"
-                    });
-                  }
-                  return true;
-                }
-              });
-            }
-          },
+
           {
             id: "manage-attachments",
             name: strings.manageAttachments(),
@@ -321,129 +284,14 @@ export const settingsGroups: SettingSection[] = [
         ]
       },
       {
-        id: "sync-settings",
-        name: strings.syncSettings(),
-        description: strings.syncSettingsDesc(),
-        type: "screen",
-        icon: "autorenew",
-        component: "offline-mode-progress",
-        sections: [
-          {
-            id: "offline-mode",
-            icon: "download-multiple",
-            name: strings.fullOfflineMode(),
-            description: strings.fullOfflineModeDesc(),
-            type: "switch",
-            property: "offlineMode",
-            featureId: "fullOfflineMode",
-            modifer: () => {
-              const current = SettingsService.get().offlineMode;
-              if (current) {
-                SettingsService.setProperty("offlineMode", false);
-                db.fs().cancel("offline-mode");
-                return;
-              }
-              SettingsService.setProperty("offlineMode", true);
-              db.attachments.cacheAttachments().catch(() => {
-                /* empty */
-              });
-            }
-          },
-          {
-            id: "auto-sync",
-            name: strings.disableAutoSync(),
-            description: strings.disableAutoSyncDesc(),
-            type: "switch",
-            property: "disableAutoSync",
-            featureId: "syncControls",
-            icon: "sync-off"
-          },
-          {
-            id: "disable-realtime-sync",
-            name: strings.disableRealtimeSync(),
-            description: strings.disableRealtimeSyncDesc(),
-            type: "switch",
-            property: "disableRealtimeSync",
-            featureId: "syncControls"
-          },
-          {
-            id: "disable-sync",
-            name: strings.disableSync(),
-            description: strings.disableSyncDesc(),
-            type: "switch",
-            property: "disableSync",
-            featureId: "syncControls",
-            icon: "cloud-off-outline"
-          },
-          {
-            id: "background-sync",
-            name: strings.backgroundSync(),
-            description: strings.backgroundSyncDesc(),
-            type: "switch",
-            property: "backgroundSync",
-            icon: "cloud-upload-outline",
-            onChange: (value) => {
-              if (value) {
-                BackgroundSync.start();
-              } else {
-                BackgroundSync.stop();
-              }
-            }
-          },
-          {
-            id: "pull-sync",
-            name: strings.forcePullChanges(),
-            description: strings.forcePullChangesDesc(),
-            icon: "download",
-            modifer: () => {
-              presentDialog({
-                title: strings.forcePullChanges(),
-                paragraph: strings.forceSyncNotice(),
-                negativeText: strings.cancel(),
-                positiveText: strings.start(),
-                positivePress: async () => {
-                  eSendEvent(eCloseSheet);
-                  await sleep(300);
-                  Progress.present();
-                  Sync.run("global", true, "fetch", () => {
-                    eSendEvent(eCloseSheet);
-                  });
-                }
-              });
-            }
-          },
-          {
-            id: "push-sync",
-            name: strings.forcePushChanges(),
-            description: strings.forcePushChangesDesc(),
-            icon: "upload",
-            modifer: () => {
-              presentDialog({
-                title: strings.forcePushChanges(),
-                paragraph: strings.forceSyncNotice(),
-                negativeText: strings.cancel(),
-                positiveText: strings.start(),
-                positivePress: async () => {
-                  eSendEvent(eCloseSheet);
-                  await sleep(300);
-                  Progress.present();
-                  Sync.run("global", true, "send", () => {
-                    eSendEvent(eCloseSheet);
-                  });
-                }
-              });
-            }
-          }
-        ]
-      },
-      {
+
         id: "hermes",
-        name: "Hermes",
+        name: "Libre Notes Repository",
         icon: "application",
-        description: "Open Hermes repository (github.com/Harshajaya13/Hermes)",
+        description: "Open Libre Notes repository (github.com/Harshajaya13/Libre-Note)",
         modifer: async () => {
           try {
-            await Linking.openURL("https://github.com/Harshajaya13/Hermes");
+            await Linking.openURL("https://github.com/Harshajaya13/Libre-Note");
           } catch (e) {
             console.error(e);
           }
@@ -1257,101 +1105,5 @@ export const settingsGroups: SettingSection[] = [
     ]
   },
 
-  {
-    id: "legal",
-    name: strings.legal(),
-    sections: [
-      {
-        id: "tos",
-        name: strings.tos(),
-        icon: "briefcase-outline",
-        modifer: async () => {
-          try {
-            await Linking.openURL("https://notesnook.com/tos");
-          } catch (e) {
-            console.error(e);
-          }
-        },
-        description: strings.tosDesc()
-      },
-      {
-        id: "privacy-policy",
-        name: strings.privacyPolicy(),
-        icon: "shield-outline",
-        modifer: async () => {
-          try {
-            await Linking.openURL("https://notesnook.com/privacy");
-          } catch (e) {
-            console.error(e);
-          }
-        },
-        description: strings.privacyPolicyDesc()
-      },
-      {
-        id: "licenses",
-        name: strings.licenses(),
-        type: "screen",
-        component: "licenses",
-        description: strings.ossLibs(),
-        icon: "open-source-initiative"
-      }
-    ]
-  },
-  {
-    id: "about",
-    name: strings.about(),
-    sections: [
-      {
-        id: "download",
-        name: strings.downloadOnDesktop(),
-        icon: "monitor",
-        modifer: async () => {
-          try {
-            await Linking.openURL("https://notesnook.com/downloads");
-          } catch (e) {
-            console.error(e);
-          }
-        },
-        description: strings.downloadOnDesktopDesc()
-      },
-      {
-        id: "roadmap",
-        name: strings.roadmap(),
-        icon: "chart-timeline",
-        modifer: async () => {
-          try {
-            await Linking.openURL("https://notesnook.com/roadmap/");
-          } catch (e) {
-            console.error(e);
-          }
-        },
-        description: strings.roadmapDesc()
-      },
-      {
-        id: "check-for-updates",
-        name: strings.checkForUpdates(),
-        icon: "cellphone-arrow-down",
-        description: strings.checkForUpdatesDesc(),
-        modifer: async () => {
-          presentSheet({
-            //@ts-ignore // Migrate to ts
-            component: (ref) => <Update fwdRef={ref} />
-          });
-        }
-      },
-      {
-        id: "app-version",
-        name: strings.appVersion(),
-        icon: "alpha-v",
-        modifer: async () => {
-          try {
-            await Linking.openURL("https://github.com/Harshajaya13/Notesnook-Libre");
-          } catch (e) {
-            console.error(e);
-          }
-        },
-        description: `${getVersion()} (Notesnook Libre)`
-      }
-    ]
-  }
+
 ];

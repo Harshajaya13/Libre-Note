@@ -272,65 +272,13 @@ export const UserSheet = () => {
 
       <View>
         {[
-          {
-            icon: "view-dashboard-outline",
-            title: "Switch Workspace",
-            onPress: () => {
-              ref.current?.hide();
-              const { currentSpace, spaces, switchSpace, addSpace } = useUserStore.getState();
-              presentDialog({
-                title: "Switch Workspace",
-                paragraph: `Current Workspace: ${currentSpace}\nWorkspaces: ${spaces.join(", ")}\n\nEnter a new workspace name to create or switch:`,
-                input: true,
-                inputPlaceholder: "Workspace name (e.g. Work, Personal, Private)",
-                defaultValue: "",
-                positiveText: "Switch / Create",
-                negativeText: "Cancel",
-                positivePress: async (value) => {
-                  if (value && value.trim()) {
-                    addSpace(value.trim());
-                    ToastManager.show({
-                      heading: "Workspace Switched",
-                      message: `Switched to ${value.trim()} workspace`,
-                      type: "success"
-                    });
-                  } else {
-                    const nextIndex = (spaces.indexOf(currentSpace) + 1) % spaces.length;
-                    const nextSpace = spaces[nextIndex] || "Personal";
-                    switchSpace(nextSpace);
-                    ToastManager.show({
-                      heading: "Workspace Switched",
-                      message: `Switched to ${nextSpace} workspace`,
-                      type: "success"
-                    });
-                  }
-                  return true;
-                }
-              });
-            }
-          },
-          {
-            icon: "cog-outline",
-            title: strings.settings(),
-            onPress: () => {
-              ref.current?.hide();
-              Navigation.navigate("Settings");
-            }
-          },
-          {
-            icon: "application",
-            title: "Hermes",
-            onPress: async () => {
-              ref.current?.hide();
-              Linking.openURL("https://github.com/Harshajaya13/Hermes");
-            }
-          },
+
           {
             icon: "github",
             title: "Libre Notes Repository",
             onPress: async () => {
               ref.current?.hide();
-              Linking.openURL("https://github.com/Harshajaya13/Notesnook-Libre");
+              Linking.openURL("https://github.com/Harshajaya13/Libre-Note");
             }
           }
         ].map((item) =>

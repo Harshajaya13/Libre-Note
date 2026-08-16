@@ -179,8 +179,7 @@ export const SideMenuHeader = (props: { rightButtons?: IconButtonProps[] }) => {
             size={AppFontSize.lg}
           />
         ))}
-        <SyncStatusButton />
-        <WorkspaceBadge />
+
       </View>
     </View>
   );
