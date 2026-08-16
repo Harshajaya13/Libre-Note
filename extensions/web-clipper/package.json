@@ -1,0 +1,119 @@
+{
+  "name": "@notesnook/web-clipper",
+  "version": "0.4.1",
+  "private": true,
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "require": {
+        "types": "./dist/types/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      },
+      "import": {
+        "types": "./dist/types/index.d.ts",
+        "default": "./dist/esm/index.js"
+      }
+    },
+    "./*": {
+      "require": {
+        "types": "./dist/types/*",
+        "default": "./dist/cjs/*"
+      },
+      "import": {
+        "types": "./dist/types/*",
+        "default": "./dist/esm/*"
+      }
+    }
+  },
+  "dependencies": {
+    "@emotion/react": "11.11.1",
+    "@mdi/js": "7.4.47",
+    "@mdi/react": "1.6.1",
+    "@notesnook/clipper": "file:../../packages/clipper",
+    "@notesnook/theme": "file:../../packages/theme",
+    "@theme-ui/components": "0.16.1",
+    "@theme-ui/core": "0.16.1",
+    "comlink": "^4.3.1",
+    "hyperapp": "^2.0.22",
+    "mac-scrollbar": "0.13.6",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-frame-component": "^5.2.6",
+    "react-modal": "3.16.3",
+    "react-scripts": "5.0.0",
+    "svg-react-loader": "^0.4.6",
+    "webextension-polyfill-ts": "^0.26.0",
+    "zustand": "4.5.5"
+  },
+  "scripts": {
+    "build:firefox": "cross-env MANIFEST_VERSION=2 node build-utils/build.js",
+    "build:chrome": "cross-env MANIFEST_VERSION=3 node build-utils/build.js",
+    "dev:chrome": "cross-env MANIFEST_VERSION=3 node build-utils/dev.js",
+    "dev:firefox": "cross-env MANIFEST_VERSION=2 node build-utils/dev.js",
+    "build": "node ../../scripts/build.mjs"
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  },
+  "devDependencies": {
+    "@babel/core": "7.22.5",
+    "@babel/plugin-proposal-class-properties": "^7.16.7",
+    "@babel/preset-env": "^7.16.11",
+    "@babel/preset-react": "^7.16.7",
+    "@types/chrome": "^0.0.180",
+    "@types/firefox-webext-browser": "^94.0.1",
+    "@types/inline-css": "^3.0.1",
+    "@types/jest": "^26.0.14",
+    "@types/postlight__mercury-parser": "^2.2.4",
+    "@types/react": "18.3.5",
+    "@types/react-dom": "18.3.0",
+    "@types/react-modal": "3.16.3",
+    "@types/sanitize-html": "^2.6.2",
+    "@types/webextension-polyfill": "^0.8.3",
+    "babel-eslint": "^10.1.0",
+    "babel-loader": "^8.2.3",
+    "babel-preset-react-app": "^10.0.1",
+    "clean-webpack-plugin": "^4.0.0",
+    "copy-webpack-plugin": "^7.0.0",
+    "css-loader": "^6.6.0",
+    "eslint": "^8.8.0",
+    "eslint-config-react-app": "^7.0.0",
+    "eslint-plugin-flowtype": "^8.0.3",
+    "eslint-plugin-import": "^2.25.4",
+    "eslint-plugin-jsx-a11y": "^6.5.1",
+    "eslint-plugin-react": "^7.28.0",
+    "eslint-plugin-react-hooks": "^4.3.0",
+    "file-loader": "^6.2.0",
+    "fs-extra": "^10.0.0",
+    "html-loader": "^3.1.0",
+    "html-webpack-plugin": "^5.5.0",
+    "prettier": "^2.5.1",
+    "source-map-loader": "^3.0.1",
+    "style-loader": "^3.3.1",
+    "terser-webpack-plugin": "^5.3.1",
+    "ts-loader": "^9.2.6",
+    "web-ext": "^7.12.0",
+    "webpack": "5.88.2",
+    "webpack-cli": "5.1.4",
+    "webpack-dev-server": "^4.7.4"
+  },
+  "license": "GPL-3.0-or-later",
+  "author": {
+    "name": "Streetwriters (Private) Limited",
+    "email": "support@streetwriters.co",
+    "url": "https://streetwriters.co"
+  },
+  "homepage": "https://notesnook.com/",
+  "repository": "https://github.com/streetwriters/notesnook"
+}

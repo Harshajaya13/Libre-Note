@@ -1,0 +1,975 @@
+/*
+This file is part of the Notesnook project (https://notesnook.com/)
+
+Copyright (C) 2023 Streetwriters (Private) Limited
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+import { isFeatureAvailable } from "@notesnook/common";
+import {
+  EV,
+  EVENTS,
+  EventManagerSubscription,
+  SYNC_CHECK_IDS,
+  SubscriptionPlan,
+  SyncStatusEvent,
+  User,
+  isInternalLink,
+  parseInternalLink
+} from "@notesnook/core";
+import { strings } from "@notesnook/intl";
+import notifee from "@notifee/react-native";
+import NetInfo, { NetInfoSubscription } from "@react-native-community/netinfo";
+import dayjs from "dayjs";
+import React, { useCallback, useEffect, useRef } from "react";
+import {
+  AppState,
+  AppStateStatus,
+  EmitterSubscription,
+  Keyboard,
+  Linking,
+  NativeEventEmitter,
+  NativeEventSubscription,
+  NativeModules,
+  Platform
+} from "react-native";
+import { checkVersion } from "react-native-check-version";
+import Config from "react-native-config";
+import * as RNIap from "react-native-iap";
+import { DatabaseLogger, db, setupDatabase } from "../common/database";
+import { initializeLogger } from "../common/database/logger";
+import { MMKV } from "../common/database/mmkv";
+import { deleteDCacheFiles } from "../common/filesystem/io";
+import { endProgress, startProgress } from "../components/dialogs/progress";
+import Migrate from "../components/sheets/migrate";
+import NewFeature from "../components/sheets/new-feature";
+import PaywallSheet from "../components/sheets/paywall";
+import { Walkthrough } from "../components/walkthroughs";
+import AddReminder from "../screens/add-reminder";
+import {
+  resetTabStore,
+  useTabStore
+} from "../screens/editor/tiptap/use-tab-store";
+import { editorController, editorState } from "../screens/editor/tiptap/utils";
+import { useDragState } from "../screens/settings/editor/state";
+import BackupService from "../services/backup";
+import BiometricService from "../services/biometrics";
+import {
+  ToastManager,
+  eSendEvent,
+  eSubscribeEvent,
+  presentSheet
+} from "../services/event-manager";
+import {
+  clearMessage,
+  setEmailVerifyMessage,
+  setLoginMessage,
+  setRateAppMessage,
+  setRecoveryKeyMessage,
+  setUpdateAvailableMessage
+} from "../services/message";
+import Navigation from "../services/navigation";
+import { NotePreviewWidget } from "../services/note-preview-widget";
+import Notifications from "../services/notifications";
+import PremiumService from "../services/premium";
+import SettingsService from "../services/settings";
+import Sync from "../services/sync";
+import { clearAllStores, initAfterSync } from "../stores";
+import { refreshAllStores } from "../stores/create-db-collection-store";
+import { useAttachmentStore } from "../stores/use-attachment-store";
+import { useMessageStore } from "../stores/use-message-store";
+import { useRelationStore } from "../stores/use-relation-store";
+import { useSettingStore } from "../stores/use-setting-store";
+import { SyncStatus, useUserStore } from "../stores/use-user-store";
+import { updateStatusBarColor } from "../utils/colors";
+import { BETA } from "../utils/constants";
+import {
+  eAfterSync,
+  eCloseSheet,
+  eCloseSimpleDialog,
+  eEditorReset,
+  eLoginSessionExpired,
+  eOnLoadNote,
+  eOpenAnnouncementDialog,
+  eUserLoggedIn,
+  refreshNotesPage
+} from "../utils/events";
+import { getGithubVersion } from "../utils/github-version";
+import { fluidTabsRef } from "../utils/global-refs";
+import { sleep } from "../utils/time";
+import useFeatureManager from "./use-feature-manager";
+
+const onCheckSyncStatus = async (type: SyncStatusEvent) => {
+  const { disableSync, disableAutoSync } = SettingsService.get();
+  switch (type) {
+    case SYNC_CHECK_IDS.sync:
+      return { type, result: !disableSync };
+    case SYNC_CHECK_IDS.autoSync:
+      return { type, result: !disableAutoSync };
+    default:
+      return { type, result: true };
+  }
+};
+
+const onSyncAborted = () => {
+  useUserStore.getState().setSyncing(false, SyncStatus.Failed);
+};
+
+const onFileEncryptionProgress = ({
+  total,
+  progress
+}: {
+  total: number;
+  progress: number;
+}) => {
+  useAttachmentStore
+    .getState()
+    .setEncryptionProgress(Math.round(progress / total));
+};
+
+const onDownloadingAttachmentProgress = (data: any) => {
+  useAttachmentStore.getState().setDownloading(data);
+};
+
+const onUploadingAttachmentProgress = (data: any) => {
+  useAttachmentStore.getState().setUploading(data);
+};
+
+const onDownloadedAttachmentProgress = (data: any) => {
+  useAttachmentStore.getState().setDownloading(data);
+};
+
+const onUploadedAttachmentProgress = (data: any) => {
+  useAttachmentStore.getState().setUploading(data);
+};
+
+const onUserSessionExpired = async () => {
+  SettingsService.set({
+    sessionExpired: true
+  });
+  eSendEvent(eLoginSessionExpired);
+};
+
+const onAppOpenedFromURL = async (event: {
+  url: string;
+  isInitialUrl?: boolean;
+}) => {
+  const url = event.url;
+
+  const parsedLink = isInternalLink(url) ? parseInternalLink(url) : undefined;
+
+  try {
+    if (url.startsWith("https://app.notesnook.com/account/verified")) {
+      await onUserEmailVerified();
+    } else if (url.startsWith("ShareMedia://QuickNoteWidget")) {
+      editorState().movedAway = false;
+      eSendEvent(eOnLoadNote, { newNote: true });
+      fluidTabsRef.current?.goToPage("editor", false);
+      return;
+    } else if (
+      parsedLink?.type === "note" ||
+      url.startsWith("https://app.notesnook.com/open_note?")
+    ) {
+      const id = parsedLink?.id || new URL(url).searchParams.get("id");
+
+      if (id) {
+        const note = await db.notes.note(id);
+        if (note) {
+          editorState().initialLoadCalled = true;
+          eSendEvent(eOnLoadNote, {
+            item: note
+          });
+          fluidTabsRef.current?.goToPage("editor", false);
+        }
+      }
+    } else if (
+      (parsedLink?.type === "notebook" ||
+        url.startsWith("https://app.notesnook.com/open_notebook?")) &&
+      !event.isInitialUrl
+    ) {
+      const id = parsedLink?.id || new URL(url).searchParams.get("id");
+      if (id) {
+        const notebook = await db.notebooks.notebook(id);
+        if (notebook) {
+          fluidTabsRef.current?.goToPage("home");
+          Navigation.navigate("Notebook", {
+            id: notebook.id,
+            canGoBack: true,
+            item: notebook
+          });
+        }
+      }
+    } else if (
+      (parsedLink?.type === "tag" ||
+        url.startsWith("https://app.notesnook.com/open_tag?")) &&
+      !event.isInitialUrl
+    ) {
+      const id = parsedLink?.id || new URL(url).searchParams.get("id");
+      if (id) {
+        const tag = await db.tags.tag(id);
+        if (tag) {
+          fluidTabsRef.current?.goToPage("home");
+          Navigation.navigate("TaggedNotes", {
+            type: "tag",
+            id: tag.id,
+            item: tag,
+            canGoBack: true
+          });
+        }
+      }
+    } else if (
+      (parsedLink?.type === "color" ||
+        url.startsWith("https://app.notesnook.com/open_color?")) &&
+      !event.isInitialUrl
+    ) {
+      const id = parsedLink?.id || new URL(url).searchParams.get("id");
+      if (id) {
+        const color = await db.colors.color(id);
+        if (color) {
+          fluidTabsRef.current?.goToPage("home");
+          Navigation.navigate("ColoredNotes", {
+            type: "color",
+            id: color.id,
+            item: color,
+            canGoBack: true
+          });
+        }
+      }
+    } else if (url.startsWith("https://app.notesnook.com/open_reminder")) {
+      const id = new URL(url).searchParams.get("id");
+      if (id) {
+        const reminder = await db.reminders.reminder(id);
+        if (reminder) AddReminder.present(reminder);
+      }
+    } else if (url.startsWith("https://app.notesnook.com/new_reminder")) {
+      const reminderFeature = await isFeatureAvailable("activeReminders");
+      if (!reminderFeature.isAllowed) {
+        ToastManager.show({
+          type: "info",
+          message: reminderFeature.error,
+          actionText: strings.upgrade(),
+          func: () => {
+            PaywallSheet.present(reminderFeature);
+          }
+        });
+        return;
+      }
+      AddReminder.present();
+    }
+  } catch (e) {
+    console.error(e);
+  }
+};
+
+const onUserEmailVerified = async () => {
+  const user = await db.user.getUser();
+  useUserStore.getState().setUser(user);
+  if (!user) return;
+  SettingsService.set({
+    userEmailConfirmed: true
+  });
+  await PremiumService.setPremiumStatus();
+  Walkthrough.present("emailconfirmed", false, true);
+  if (user?.isEmailConfirmed) {
+    clearMessage();
+  }
+};
+
+const onUserSubscriptionStatusChanged = async (
+  subscription: User["subscription"]
+) => {
+  if (
+    subscription &&
+    subscription.plan !== SubscriptionPlan.FREE &&
+    subscription.plan !== useUserStore.getState().user?.subscription?.plan
+  ) {
+    PremiumService.subscriptions.clear();
+    useUserStore.setState({
+      user: {
+        ...(useUserStore.getState().user as User),
+        subscription: subscription
+      }
+    });
+    eSendEvent(eCloseSimpleDialog);
+    setTimeout(() => {
+      Walkthrough.present("prouser", false, true);
+    }, 500);
+  }
+  await PremiumService.setPremiumStatus();
+  useMessageStore.getState().setAnnouncement();
+  useUserStore.getState().setUser(await db.user.fetchUser());
+};
+
+const onRequestPartialSync = async (
+  full: boolean,
+  force: boolean,
+  lastSyncTime?: number | undefined
+) => {
+  if (SettingsService.get().disableAutoSync) return;
+  DatabaseLogger.info(
+    `onRequestPartialSync full:${full}, force:${force}, lastSyncTime:${lastSyncTime}`
+  );
+
+  await Sync.run(
+    "global",
+    force,
+    full ? "full" : "send",
+    undefined,
+    lastSyncTime
+  );
+};
+
+const onLogout = async (reason: string) => {
+  DatabaseLogger.log("User Logged Out " + reason);
+  setLoginMessage();
+  await PremiumService.setPremiumStatus();
+  await BiometricService.resetCredentials();
+  MMKV.clearStore();
+  resetTabStore();
+  clearAllStores();
+  setImmediate(() => {
+    refreshAllStores();
+  });
+  Navigation.queueRoutesForUpdate();
+  SettingsService.resetSettings();
+  useUserStore.getState().setUser(null);
+  useUserStore.getState().setSyncing(false);
+  useUserStore.getState().setIsLoggingOut(false);
+  eSendEvent(eAfterSync);
+};
+
+async function checkForShareExtensionLaunchedInBackground() {
+  try {
+    const notesAddedFromIntent = MMKV.getString("notesAddedFromIntent");
+    const shareExtensionOpened = MMKV.getString("shareExtensionOpened");
+    if (notesAddedFromIntent) {
+      if (Platform.OS === "ios") {
+        await db.initCollections();
+        await db.notes.init();
+      }
+      eSendEvent(refreshNotesPage);
+      MMKV.removeItem("notesAddedFromIntent");
+      initAfterSync("full");
+      eSendEvent(refreshNotesPage);
+    }
+
+    if (notesAddedFromIntent || shareExtensionOpened) {
+      const id = useTabStore.getState().getCurrentNoteId();
+      const note = id && (await db.notes.note(id));
+      eSendEvent(eEditorReset);
+      if (note) setTimeout(() => eSendEvent("loadingNote", note), 1);
+      MMKV.removeItem("shareExtensionOpened");
+    }
+  } catch (e) {
+    /**
+    empty */
+  }
+}
+
+const onSuccessfulSubscription = async (
+  subscription: RNIap.ProductPurchase | RNIap.SubscriptionPurchase
+) => {
+  if (Platform.OS === "android") return;
+  await PremiumService.subscriptions.set(subscription);
+  await PremiumService.subscriptions.verify(subscription);
+};
+
+const onSubscriptionError = async (error: RNIap.PurchaseError) => {
+  ToastManager.show({
+    heading: strings.failedToSubscribe(),
+    type: "error",
+    message: error.message,
+    context: "local"
+  });
+};
+
+const SodiumEventEmitter = new NativeEventEmitter(NativeModules.Sodium);
+
+const setAppMessage = async () => {
+  const user = await db.user.getUser();
+  if (!user) {
+    setLoginMessage();
+    return;
+  }
+  if (!user?.isEmailConfirmed) {
+    setEmailVerifyMessage();
+    return;
+  }
+  if (await checkForRateAppRequest()) return;
+  if (
+    user?.isEmailConfirmed &&
+    !SettingsService.get().recoveryKeySaved &&
+    !useMessageStore.getState().message?.visible
+  ) {
+    setRecoveryKeyMessage();
+    return;
+  }
+  useMessageStore.getState().setAnnouncement();
+  checkAppUpdateAvailable();
+};
+
+const doAppLoadActions = async () => {
+  if (SettingsService.get().sessionExpired) {
+    eSendEvent(eLoginSessionExpired);
+    return;
+  }
+  notifee.setBadgeCount(0);
+  if (NewFeature.present()) return;
+  if (SettingsService.get().introCompleted) {
+    useMessageStore.subscribe((state) => {
+      const dialogs = state.dialogs;
+      if (dialogs.length > 0) {
+        eSendEvent(eOpenAnnouncementDialog, dialogs[0]);
+      }
+    });
+  }
+};
+
+const checkAppUpdateAvailable = async () => {
+  if (
+    __DEV__ ||
+    Config.isTesting === "true" ||
+    Config.FDROID_BUILD ||
+    BETA ||
+    !SettingsService.getProperty("checkForUpdates")
+  )
+    return;
+
+  try {
+    const version =
+      Config.GITHUB_RELEASE === "true"
+        ? await getGithubVersion()
+        : await checkVersion();
+    if (!version || !version?.needsUpdate) return false;
+
+    setUpdateAvailableMessage(version);
+    return true;
+  } catch (e) {
+    return false;
+  }
+};
+
+const checkForRateAppRequest = async () => {
+  const rateApp = SettingsService.get().rateApp as number;
+  if (
+    rateApp &&
+    rateApp < Date.now() &&
+    !useMessageStore.getState().message?.visible
+  ) {
+    setRateAppMessage();
+    return true;
+  }
+  return false;
+};
+
+const IsDatabaseMigrationRequired = () => {
+  if (!db.migrations.required() || useUserStore.getState().appLocked)
+    return false;
+
+  presentSheet({
+    component: <Migrate />,
+    onClose: () => {
+      if (!db.migrations.required()) {
+        initializeDatabase();
+      }
+    },
+    disableClosing: true
+  });
+  return true;
+};
+
+let timer: NodeJS.Timeout | null = null;
+let initialDate = -1;
+async function expiringNotesTimer() {
+  if (timer != null) clearInterval(timer);
+
+  if (initialDate === -1) {
+    DatabaseLogger.info("Deleting expired notes at startup");
+    db.notes.deleteExpiredNotes();
+    initialDate = dayjs().date();
+  }
+
+  timer = setInterval(() => {
+    if (dayjs().date() != initialDate) {
+      DatabaseLogger.info("Deleting expired notes");
+      db.notes.deleteExpiredNotes();
+      Navigation.queueRoutesForUpdate();
+      useRelationStore.getState().update();
+      initialDate = dayjs().date();
+    }
+  }, 1000 * 60);
+}
+
+const initializeDatabase = async (password?: string) => {
+  if (useUserStore.getState().appLocked) return;
+  if (!db.isInitialized) {
+    DatabaseLogger.info("Initializing database");
+    try {
+      await setupDatabase(password);
+      await db.init();
+      Sync.run();
+    } catch (e) {
+      DatabaseLogger.error(e as Error);
+      ToastManager.error(e as Error, "Error initializing database", "global");
+    }
+  }
+
+  if (IsDatabaseMigrationRequired()) return;
+
+  if (db.isInitialized) {
+    await setAppMessage();
+    useSettingStore.getState().setAppLoading(false);
+    useSettingStore.getState().refresh();
+    Notifications.setupReminders(true);
+    DatabaseLogger.info("Database initialized");
+    Notifications.restorePinnedNotes();
+    expiringNotesTimer();
+    deleteDCacheFiles();
+  }
+  Walkthrough.init();
+};
+
+export const useAppEvents = () => {
+  const [isAppLoading, initialUrl] = useSettingStore((state) => [
+    state.isAppLoading,
+    state.initialUrl
+  ]);
+  const [setLastSynced, setUser, appLocked, syncing] = useUserStore((state) => [
+    state.setLastSynced,
+    state.setUser,
+    state.appLocked,
+    state.syncing
+  ]);
+  useFeatureManager();
+  const syncedOnLaunch = useRef(false);
+  const refValues = useRef<
+    Partial<{
+      subsriptionSuccessListener: EmitterSubscription;
+      subsriptionErrorListener: EmitterSubscription;
+      prevState: AppStateStatus;
+      removeInternetStateListener: NetInfoSubscription;
+      initialUrl: string;
+      backupDidWait: boolean;
+      isConnectingSSE: boolean;
+      attachmentsCachedOfflineMode: boolean;
+    }>
+  >({});
+
+  const onSyncComplete = useCallback(async () => {
+    initAfterSync(Sync.getLastSyncType() as "full" | "send");
+    setLastSynced(await db.lastSynced());
+    eSendEvent(eCloseSheet, "sync_progress");
+  }, [setLastSynced]);
+
+  useEffect(() => {
+    if (isAppLoading) return;
+
+    // Widgets outlive the app process, so they can be left showing content the app no longer has
+    // (most obviously after the user clears app data). Nothing can run at that moment, so the
+    // first launch afterwards is the earliest chance to put them right.
+    NotePreviewWidget.updateNotes();
+
+    let subscriptions: EventManagerSubscription[] = [];
+    const eventManager = db.eventManager;
+    subscriptions = [
+      eventManager?.subscribe(EVENTS.syncCompleted, onSyncComplete),
+      eventManager?.subscribe(
+        EVENTS.databaseSyncRequested,
+        onRequestPartialSync
+      )
+    ];
+
+    return () => {
+      subscriptions.forEach((sub) => sub?.unsubscribe?.());
+    };
+  }, [isAppLoading, onSyncComplete]);
+
+  useEffect(() => {
+    if (initialUrl && !isAppLoading) {
+      onAppOpenedFromURL({
+        url: initialUrl!,
+        isInitialUrl: true
+      });
+    }
+  }, [initialUrl, isAppLoading]);
+
+  const subscribeToPurchaseListeners = useCallback(async () => {
+    if (Platform.OS === "android") {
+      try {
+        await RNIap.flushFailedPurchasesCachedAsPendingAndroid();
+      } catch (e) {
+        e;
+      }
+    }
+    refValues.current.subsriptionSuccessListener =
+      RNIap.purchaseUpdatedListener(onSuccessfulSubscription);
+    refValues.current.subsriptionErrorListener =
+      RNIap.purchaseErrorListener(onSubscriptionError);
+  }, []);
+
+  const unsubscribePurchaseListeners = () => {
+    if (refValues.current?.subsriptionSuccessListener) {
+      refValues.current.subsriptionSuccessListener?.remove();
+      refValues.current.subsriptionSuccessListener = undefined;
+    }
+    if (refValues.current?.subsriptionErrorListener) {
+      refValues.current.subsriptionErrorListener?.remove();
+      refValues.current.subsriptionErrorListener = undefined;
+    }
+  };
+
+  const checkAutoBackup = useCallback(async () => {
+    const { appLocked, syncing } = useUserStore.getState();
+
+    if (appLocked || syncing) {
+      refValues.current.backupDidWait = true;
+      return;
+    }
+    const user = await db.user.getUser();
+    if (PremiumService.get() && user) {
+      if (
+        SettingsService.get().backupDirectoryAndroid ||
+        Platform.OS !== "android"
+      ) {
+        const partialBackup = await BackupService.checkBackupRequired(
+          SettingsService.get().reminder,
+          "lastBackupDate"
+        );
+        const fullBackup = await BackupService.checkBackupRequired(
+          SettingsService.get().fullBackupReminder,
+          "lastFullBackupDate"
+        );
+
+        await sleep(2000);
+
+        if (partialBackup) {
+          await BackupService.run();
+        }
+
+        if (fullBackup) {
+          await BackupService.run(false, undefined, "full");
+        }
+      }
+
+      if (
+        SettingsService.getProperty("offlineMode") &&
+        !refValues.current.attachmentsCachedOfflineMode
+      ) {
+        refValues.current.attachmentsCachedOfflineMode = true;
+        db.attachments.cacheAttachments().catch(() => {
+          /* empty */
+        });
+      }
+    }
+  }, []);
+
+  const onUserUpdated = useCallback(
+    async (isLogin?: boolean) => {
+      let user;
+      try {
+        user = await db.user.getUser();
+        await PremiumService.setPremiumStatus();
+        setLastSynced(await db.lastSynced());
+        await useDragState.getState().init();
+        if (!user) return;
+
+        const isUserEmailConfirmed = SettingsService.get().userEmailConfirmed;
+        setUser(user);
+
+        useUserStore.setState({
+          profile: db.settings.getProfile()
+        });
+
+        if (SettingsService.get().sessionExpired) {
+          syncedOnLaunch.current = true;
+          return;
+        }
+        subscribeToPurchaseListeners();
+        if (!isLogin) {
+          user = await db.user.fetchUser();
+          setUser(user);
+        } else {
+          SettingsService.set({
+            encryptedBackup: true
+          });
+        }
+
+        if (useMessageStore.getState().message.id === "log-in") {
+          clearMessage();
+          setAppMessage();
+        }
+
+        await PremiumService.setPremiumStatus();
+        if (user?.isEmailConfirmed && !isUserEmailConfirmed) {
+          setTimeout(() => {
+            onUserEmailVerified();
+          }, 1000);
+          SettingsService.set({
+            userEmailConfirmed: true
+          });
+        }
+      } catch (e) {
+        ToastManager.error(e as Error, "Error updating user", "global");
+      }
+
+      syncedOnLaunch.current = true;
+      if (!isLogin) {
+        checkAutoBackup();
+      }
+    },
+    [subscribeToPurchaseListeners, setLastSynced, setUser, checkAutoBackup]
+  );
+
+  useEffect(() => {
+    const subscriptions = [
+      db.eventManager.subscribe(EVENTS.syncCheckStatus, onCheckSyncStatus),
+      db.eventManager.subscribe(EVENTS.userFetched, async () => {
+        const inboxEnabled = await db.user.hasInboxKeys();
+        useSettingStore.getState().setInboxEnabled(inboxEnabled);
+      }),
+      db.eventManager.subscribe(EVENTS.syncAborted, onSyncAborted),
+      db.eventManager.subscribe(EVENTS.appRefreshRequested, onSyncComplete),
+      db.eventManager.subscribe(EVENTS.userLoggedOut, onLogout),
+      db.eventManager.subscribe(EVENTS.userEmailConfirmed, onUserEmailVerified),
+      db.eventManager.subscribe(
+        EVENTS.userSessionExpired,
+        onUserSessionExpired
+      ),
+      db.eventManager.subscribe(
+        EVENTS.userSubscriptionUpdated,
+        onUserSubscriptionStatusChanged
+      ),
+      db.eventManager.subscribe(
+        EVENTS.fileDownload,
+        onDownloadingAttachmentProgress
+      ),
+      db.eventManager.subscribe(
+        EVENTS.fileUpload,
+        onUploadingAttachmentProgress
+      ),
+      db.eventManager.subscribe(
+        EVENTS.fileDownloaded,
+        onDownloadedAttachmentProgress
+      ),
+      db.eventManager.subscribe(
+        EVENTS.fileUploaded,
+        onUploadedAttachmentProgress
+      ),
+      db.eventManager.subscribe(EVENTS.downloadCanceled, (data) => {
+        useAttachmentStore.getState().setDownloading(data);
+      }),
+      db.eventManager.subscribe(EVENTS.uploadCanceled, (data) => {
+        useAttachmentStore.getState().setUploading(data);
+      }),
+      db.eventManager.subscribeMulti(
+        [EVENTS.vaultAutoLocked, EVENTS.vaultLocked],
+        () => {
+          setTimeout(() => {
+            ToastManager.show({
+              message: strings.vaultLocked(),
+              type: "info"
+            });
+          }, 300);
+        },
+        undefined
+      ),
+      db.eventManager.subscribe(EVENTS.vaultUnlocked, () => {
+        setTimeout(() => {
+          ToastManager.show({
+            message: strings.vaultUnlocked(),
+            type: "info"
+          });
+        }, 300);
+      }),
+      EV.subscribe(EVENTS.migrationStarted, (name) => {
+        if (
+          name !== "notesnook" ||
+          !SettingsService.getProperty("introCompleted") ||
+          Config.isTesting === "true"
+        )
+          return;
+        startProgress({
+          title: "Migrating Data",
+          paragraph: "Please wait while we migrate your data",
+          canHideProgress: false,
+          fillBackground: true
+        });
+      }),
+      EV.subscribe(EVENTS.migrationFinished, (name) => {
+        if (
+          name !== "notesnook" ||
+          !SettingsService.getProperty("introCompleted") ||
+          Config.isTesting === "true"
+        )
+          return;
+        endProgress();
+      }),
+      db.eventManager.subscribe(EVENTS.vaultLocked, async () => {
+        // Lock all notes in all tabs...
+        for (const tab of useTabStore.getState().tabs) {
+          const noteId = useTabStore.getState().getTab(tab.id)?.session?.noteId;
+          if (!noteId) continue;
+          const note = await db.notes.note(noteId);
+          const locked = note && (await db.vaults.itemExists(note));
+          if (locked) {
+            useTabStore.getState().updateTab(tab.id, {
+              session: {
+                locked: true,
+                noteLocked: true
+              }
+            });
+          }
+        }
+      }),
+      eSubscribeEvent(eUserLoggedIn, onUserUpdated)
+    ];
+
+    const emitterSubscriptions = [
+      Linking.addEventListener("url", onAppOpenedFromURL),
+
+      SodiumEventEmitter.addListener(
+        "onSodiumProgress",
+        onFileEncryptionProgress
+      )
+    ];
+
+    return () => {
+      emitterSubscriptions.forEach((sub) => sub?.remove?.());
+      subscriptions.forEach((sub) => {
+        if (Array.isArray(sub)) {
+          sub.forEach((s) => s.unsubscribe());
+        } else {
+          sub?.unsubscribe?.();
+        }
+      });
+    };
+  }, [onSyncComplete, onUserUpdated]);
+
+  useEffect(() => {
+    const onInternetStateChanged = async () => {
+      if (!syncedOnLaunch.current) return;
+      Sync.run("global", false, "full");
+      reconnectSSE();
+    };
+
+    const onAppStateChanged = async (state: AppStateStatus) => {
+      if (state === "active") {
+        notifee.setBadgeCount(0);
+        updateStatusBarColor();
+        expiringNotesTimer();
+        checkAutoBackup();
+        Sync.run("global", false, "full");
+        reconnectSSE();
+        await checkForShareExtensionLaunchedInBackground();
+        let user = await db.user.getUser();
+        if (user && !user?.isEmailConfirmed) {
+          try {
+            user = await db.user.fetchUser();
+            if (user?.isEmailConfirmed) {
+              onUserEmailVerified();
+            }
+          } catch (e) {
+            console.error(e);
+          }
+        }
+        //@ts-ignore
+        globalThis["IS_SHARE_EXTENSION"] = false;
+
+        if (
+          SettingsService.getBackgroundEnterTime() + 60 * 1000 * 10 <
+          Date.now()
+        ) {
+          // Reset the editor if the app has been in background for more than 10 minutes.
+          eSendEvent(eEditorReset);
+        }
+      } else {
+        if (
+          SettingsService.canLockAppInBackground() &&
+          !useSettingStore.getState().requestBiometrics &&
+          !useUserStore.getState().appLocked &&
+          !useUserStore.getState().disableAppLockRequests &&
+          !useSettingStore.getState().appDidEnterBackgroundForAction
+        ) {
+          if (SettingsService.shouldLockAppOnEnterForeground()) {
+            DatabaseLogger.log(`AppEvents: Locking app on enter background`);
+            useUserStore.getState().lockApp(true);
+          }
+
+          if (Platform.OS === "ios") {
+            editorController.current?.commands.blur(
+              useTabStore.getState().currentTab
+            );
+            Keyboard.dismiss();
+          }
+        }
+      }
+    };
+
+    let sub: NativeEventSubscription;
+    if (!isAppLoading && !appLocked) {
+      setTimeout(() => {
+        sub = AppState.addEventListener("change", onAppStateChanged);
+      }, 1000);
+
+      refValues.current.removeInternetStateListener = NetInfo.addEventListener(
+        onInternetStateChanged
+      );
+    }
+    return () => {
+      refValues.current?.removeInternetStateListener &&
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        refValues.current?.removeInternetStateListener();
+      sub?.remove();
+      unsubscribePurchaseListeners();
+    };
+  }, [isAppLoading, appLocked, checkAutoBackup]);
+
+  useEffect(() => {
+    if (!appLocked && !syncing && refValues.current.backupDidWait) {
+      refValues.current.backupDidWait = false;
+      checkAutoBackup();
+    }
+  }, [appLocked, syncing, checkAutoBackup]);
+
+  async function reconnectSSE() {
+    try {
+      if (refValues.current?.isConnectingSSE) return;
+      refValues.current.isConnectingSSE = true;
+      await db.connectSSE();
+      refValues.current.isConnectingSSE = false;
+    } catch (e) {
+      refValues.current.isConnectingSSE = false;
+      DatabaseLogger.error(e as Error);
+    }
+  }
+
+  useEffect(() => {
+    if (!isAppLoading) {
+      onUserUpdated();
+      doAppLoadActions();
+    }
+  }, [isAppLoading, onUserUpdated]);
+
+  useEffect(() => {
+    if (!appLocked && isAppLoading) {
+      initializeLogger()
+        .catch((e) => {})
+        .finally(() => {
+          //@ts-ignore
+          initializeDatabase();
+        });
+    }
+  }, [appLocked, isAppLoading]);
+};

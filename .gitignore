@@ -1,0 +1,51 @@
+# Dependencies
+node_modules
+node_modules.backup
+.pnpm-store
+
+# Build & Dist outputs
+dist
+build
+out
+site
+*.apk
+*.aab
+*.tsbuildinfo
+*.cache
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment & local config
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.keystore
+*.jks
+
+# IDE & OS files
+.DS_Store
+.DS_STORE
+Thumbs.db
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Testing & Coverage
+coverage
+.nyc_output
+.taskcache
+
+# Frameworks / Tools
+.nx
+nx-cloud.env
+.eslintcache
+/*.patch

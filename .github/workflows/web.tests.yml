@@ -1,0 +1,111 @@
+name: Test @notesnook/web
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "master"
+    paths:
+      - "apps/web/**"
+      # re-run workflow if workflow file changes
+      - ".github/workflows/web.tests.yml"
+  pull_request_target:
+    branches:
+      - "master"
+    paths:
+      - "apps/web/**"
+      # re-run workflow if workflow file changes
+      - ".github/workflows/web.tests.yml"
+    types:
+      - "ready_for_review"
+      - "opened"
+      - "synchronize"
+      - "reopened"
+
+jobs:
+  authorize:
+    environment: ${{ github.event_name == 'pull_request_target' &&
+      github.event.pull_request.head.repo.full_name != github.repository &&
+      'external' || 'internal' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo true
+
+  build:
+    needs: authorize
+    name: Build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+
+      - name: Setup Node
+        uses: ./.github/actions/setup-node-with-cache
+
+      - name: Install packages
+        run: |
+          npm ci --ignore-scripts --prefer-offline --no-audit
+          npm run bootstrap -- --scope=web
+
+      - name: Generate test build
+        run: npm run build:test:web
+
+      - name: Archive build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build
+          path: apps/web/build/**/*
+  test:
+    needs: build
+    name: 🧪 Test (${{ matrix.shard }}/${{ strategy.job-total }})
+    strategy:
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+
+      - name: Download build
+        uses: actions/download-artifact@v4
+        with:
+          name: build
+          path: ./apps/web/build
+
+      - name: Setup Node
+        uses: ./.github/actions/setup-node-with-cache
+
+      - name: Install packages
+        run: |
+          npm ci --ignore-scripts --prefer-offline --no-audit
+          npm install -D @playwright/test otplib dayjs @zip.js/zip.js
+
+      - name: Validate build extraction
+        run: ls -ld ./apps/web/build/index.html
+
+      - name: Install Playwright Browsers
+        run: npx playwright install chromium --with-deps
+        working-directory: apps/web
+
+      - name: Add environment variables
+        run: |
+          echo "USER_EMAIL=${{ secrets.USER_EMAIL }}" >> $GITHUB_ENV
+          echo "USER_PASSWORD=${{ secrets.USER_PASSWORD }}" >> $GITHUB_ENV
+          echo "USER_TOTP_SECRET=${{ secrets.USER_TOTP_SECRET }}" >> $GITHUB_ENV
+          echo "USER_KEY=${{ secrets.USER_KEY }}" >> $GITHUB_ENV
+
+      - name: Run tests
+        run: npx playwright test --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+        working-directory: apps/web
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-results-${{ matrix.shard }}
+          path: apps/web/test-results
+          retention-days: 5

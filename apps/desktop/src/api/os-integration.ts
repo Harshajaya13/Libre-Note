@@ -1,0 +1,306 @@
+/*
+This file is part of the Notesnook project (https://notesnook.com/)
+
+Copyright (C) 2023 Streetwriters (Private) Limited
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+import { initTRPC } from "@trpc/server";
+import { z } from "zod";
+import {
+  app,
+  dialog,
+  Menu,
+  MenuItem,
+  nativeTheme,
+  Notification,
+  shell
+} from "electron";
+import { AutoLaunch } from "../utils/autolaunch";
+import { config, DesktopIntegration } from "../utils/config";
+import { bringToFront } from "../utils/bring-to-front";
+import { getTheme, setTheme, Theme } from "../utils/theme";
+import { existsSync } from "fs";
+import { normalizePathString, resolvePath } from "../utils/resolve-path";
+import { observable } from "@trpc/server/observable";
+import { AssetManager } from "../utils/asset-manager";
+import { isFlatpak, isPortable, isSnap } from "../utils";
+import { setupDesktopIntegration } from "../utils/desktop-integration";
+import { disableCustomDns, enableCustomDns } from "../utils/custom-dns";
+import type { MenuItem as NNMenuItem } from "@notesnook/ui";
+import { platform } from "os";
+import { strings } from "@notesnook/intl";
+
+const t = initTRPC.create();
+
+const NotificationOptions = z.object({
+  title: z.string().optional(),
+  body: z.string().optional(),
+  silent: z.boolean().optional(),
+  timeoutType: z.union([z.literal("default"), z.literal("never")]).optional(),
+  urgency: z
+    .union([z.literal("normal"), z.literal("critical"), z.literal("low")])
+    .optional(),
+  tag: z.string()
+});
+
+export const osIntegrationRouter = t.router({
+  isFlatpak: t.procedure.query(() => isFlatpak()),
+  isSnap: t.procedure.query(() => isSnap()),
+  isPortable: t.procedure.query(() => isPortable()),
+  backupDirectory: t.procedure.query(() => {
+    const backupDirectory = normalizePathString(config.backupDirectory);
+    if (backupDirectory !== config.backupDirectory) {
+      config.backupDirectory = backupDirectory;
+    }
+    return backupDirectory;
+  }),
+
+  zoomFactor: t.procedure.query(() => config.zoomFactor),
+  setZoomFactor: t.procedure.input(z.number()).mutation(({ input: factor }) => {
+    globalThis.window?.webContents.setZoomFactor(factor);
+    config.zoomFactor = factor;
+  }),
+
+  customDns: t.procedure.query(() => config.customDns),
+  setCustomDns: t.procedure
+    .input(z.boolean().optional())
+    .mutation(({ input: customDns }) => {
+      if (customDns) enableCustomDns();
+      else disableCustomDns();
+      config.customDns = !!customDns;
+    }),
+
+  proxyRules: t.procedure.query(() => config.proxyRules),
+  setProxyRules: t.procedure
+    .input(z.string().optional())
+    .mutation(({ input: proxyRules }) => {
+      globalThis.window?.webContents.session.setProxy({ proxyRules });
+      config.proxyRules = proxyRules || "";
+    }),
+
+  privacyMode: t.procedure.query(() => config.privacyMode),
+  setPrivacyMode: t.procedure
+    .input(z.object({ enabled: z.boolean() }))
+    .mutation(({ input: { enabled } }) => {
+      if (!globalThis.window || !["win32", "darwin"].includes(process.platform))
+        return;
+
+      globalThis.window.setContentProtection(enabled);
+
+      if (process.platform === "win32") {
+        globalThis.window.setThumbnailClip(
+          enabled
+            ? { x: 0, y: 0, width: 1, height: 1 }
+            : { x: 0, y: 0, width: 0, height: 0 }
+        );
+      }
+      config.privacyMode = enabled;
+    }),
+
+  desktopIntegration: t.procedure.query(() => config.desktopSettings),
+  setDesktopIntegration: t.procedure
+    .input(DesktopIntegration)
+    .mutation(({ input: settings }) => {
+      if (settings.autoStart) {
+        AutoLaunch.enable(!!settings.startMinimized);
+      } else {
+        AutoLaunch.disable();
+      }
+      config.desktopSettings = settings;
+      setupDesktopIntegration(settings);
+    }),
+
+  selectBackupDirectory: t.procedure.input(z.undefined()).query(async () => {
+    if (!globalThis.window) return undefined;
+
+    const result = await dialog.showOpenDialog(globalThis.window, {
+      title: strings.selectBackupDir(),
+      buttonLabel: strings.select(),
+      properties: ["openDirectory"],
+      defaultPath: config.backupDirectory && resolvePath(config.backupDirectory)
+    });
+    if (result.canceled) return undefined;
+
+    config.backupDirectory = result.filePaths[0];
+  }),
+  restart: t.procedure.query(() => {
+    app.relaunch();
+    app.exit();
+  }),
+  showNotification: t.procedure
+    .input(NotificationOptions)
+    .query(({ input }) => {
+      const notification = new Notification({
+        ...input,
+        icon: AssetManager.appIcon({
+          size: 64,
+          format: process.platform === "win32" ? "ico" : "png"
+        })
+      });
+      notification.show();
+      if (input.urgency === "critical" && process.platform !== "linux") {
+        // due to an Electron bug in versions below 40.x, shell.beep() causes a segfault on Linux.
+        // TODO: Remove when migrating to Electron 40.x or newer.
+        shell.beep();
+      }
+
+      return new Promise((resolve) => {
+        notification.once("close", () => resolve(undefined));
+        notification.once("click", () => resolve(input.tag));
+      });
+    }),
+  openPath: t.procedure
+    .input(z.object({ type: z.literal("path"), link: z.string() }))
+    .query(async ({ input }) => {
+      if (isFlatpak()) return;
+
+      const { type, link } = input;
+      if (type !== "path") return;
+
+      const path = decodeURIComponent(new URL(link).pathname);
+      const resolvedPath = resolvePath(
+        // remove leading slash from path on windows
+        platform() === "win32" ? path.slice(1) : path
+      );
+
+      if (!existsSync(resolvedPath)) {
+        if (globalThis.window) {
+          await dialog.showMessageBox(globalThis.window, {
+            type: "error",
+            title: "Path not found",
+            message: `The path does not exist:\n${wrapPath(resolvedPath)}`
+          });
+        }
+        return;
+      }
+
+      const result = await dialog.showMessageBox(globalThis.window!, {
+        message: strings.openingLocalFileDesc(resolvedPath),
+        title: strings.openingLocalFile(),
+        buttons: [strings.cancel(), strings.open()],
+        defaultId: 1,
+        cancelId: 0,
+        type: "question"
+      });
+      result.response === 1 && (await shell.openPath(resolvedPath));
+    }),
+  bringToFront: t.procedure.query(() => bringToFront()),
+  changeTheme: t.procedure
+    .input(
+      z.object({
+        theme: Theme,
+        windowControlsIconColor: z.string().optional(),
+        backgroundColor: z.string().optional()
+      })
+    )
+    .mutation(
+      ({ input: { theme, windowControlsIconColor, backgroundColor } }) => {
+        if (windowControlsIconColor) {
+          config.windowControlsIconColor = windowControlsIconColor;
+          if (
+            process.platform === "win32" &&
+            !config.desktopSettings.nativeTitlebar
+          )
+            globalThis.window?.setTitleBarOverlay({
+              symbolColor: windowControlsIconColor
+            });
+        }
+
+        if (backgroundColor) {
+          config.backgroundColor = backgroundColor;
+        }
+
+        setTheme(theme);
+      }
+    ),
+
+  onThemeChanged: t.procedure.subscription(() =>
+    observable<"dark" | "light">((emit) => {
+      const updated = () => {
+        if (getTheme() === "system") {
+          emit.next(nativeTheme.shouldUseDarkColors ? "dark" : "light");
+        }
+      };
+      nativeTheme.on("updated", updated);
+      return () => {
+        nativeTheme.off("updated", updated);
+      };
+    })
+  ),
+
+  showMenu: t.procedure
+    .input(
+      z.object({
+        menuItems: z.array(z.any())
+      })
+    )
+    .subscription(({ input: { menuItems } }) =>
+      observable<string[]>((emit) => {
+        const items = menuItems as NNMenuItem[];
+        const menu = new Menu();
+        for (const item of items) {
+          const menuItem = toMenuItem(item, (id) => emit.next(id));
+          if (menuItem) menu.append(menuItem);
+        }
+        if (menu.items.length > 0) menu.popup();
+        menu.on("menu-will-close", () => emit.next([]));
+        return () => {
+          menu.removeAllListeners();
+          menu.closePopup();
+        };
+      })
+    )
+});
+
+function toMenuItem(
+  item: NNMenuItem,
+  onClick: (id: string[]) => void,
+  parentKey?: string
+): MenuItem | undefined {
+  switch (item.type) {
+    case "lazy-loader":
+      return undefined;
+    case "separator":
+      return new MenuItem({ type: "separator" });
+    case "button": {
+      const submenu = item.menu ? new Menu() : undefined;
+      if (submenu && item.menu) {
+        for (const subitem of item.menu.items) {
+          const subMenuItem = toMenuItem(subitem, onClick, item.key);
+          if (subMenuItem) submenu.append(subMenuItem);
+        }
+      }
+
+      return new MenuItem({
+        label: item.title,
+        enabled: !item.isDisabled,
+        visible: !item.isHidden,
+        toolTip: item.tooltip,
+        sublabel: item.tooltip,
+        checked: item.isChecked,
+        type: submenu ? "submenu" : item.isChecked ? "checkbox" : "normal",
+        id: item.key,
+        submenu,
+        click: () => onClick(parentKey ? [parentKey, item.key] : [item.key]),
+        accelerator: item.modifier?.replace("Mod", "CommandOrControl")
+      });
+    }
+  }
+}
+
+function wrapPath(path: string, maxLineLength = 100): string {
+  return path.replace(new RegExp(`(.{${maxLineLength}})`, "g"), "$1\n");
+}

@@ -1,0 +1,342 @@
+/*
+This file is part of the Notesnook project (https://notesnook.com/)
+
+Copyright (C) 2023 Streetwriters (Private) Limited
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+import type { Locator, Page } from "@playwright/test";
+import { getTestId } from "../utils";
+import { TabItemModel } from "./tab-item.model";
+import { iterateList } from "./utils";
+
+export class EditorModel {
+  private readonly page: Page;
+  readonly title: Locator;
+  readonly content: Locator;
+  private readonly tags: Locator;
+  private readonly tagInput: Locator;
+  private readonly focusModeButton: Locator;
+  private readonly normalModeButton: Locator;
+  private readonly enterFullscreenButton: Locator;
+  private readonly exitFullscreenButton: Locator;
+  private readonly wordCountText: Locator;
+  private readonly dateEditedText: Locator;
+  private readonly searchButton: Locator;
+  private readonly tabsList: Locator;
+  private readonly goBackButton: Locator;
+  private readonly goForwardButton: Locator;
+  private readonly newTabButton: Locator;
+  readonly savedIcon: Locator;
+  readonly notSavedIcon: Locator;
+  readonly undoButton: Locator;
+  readonly redoButton: Locator;
+
+  constructor(page: Page) {
+    this.page = page;
+    this.title = page.locator(".active").locator(getTestId("editor-title"));
+    this.content = page.locator(".active").locator(".ProseMirror");
+    this.tagInput = page
+      .locator(".active")
+      .locator(getTestId("editor-tag-input"));
+    this.tags = page
+      .locator(".active")
+      .locator(`${getTestId("tags")} >> ${getTestId("tag")}`);
+    this.focusModeButton = page.locator(getTestId("Focus mode"));
+    this.normalModeButton = page.locator(getTestId("Normal mode"));
+    this.enterFullscreenButton = page.locator(getTestId("Enter fullscreen"));
+    this.exitFullscreenButton = page.locator(getTestId("Exit fullscreen"));
+    this.wordCountText = page.locator(getTestId("editor-word-count"));
+    this.dateEditedText = page.locator(getTestId("editor-date-edited"));
+    this.searchButton = page.locator(getTestId("Search"));
+    this.savedIcon = page.locator(getTestId("editor-save-state-saved"));
+    this.notSavedIcon = page.locator(getTestId("editor-save-state-notsaved"));
+    this.tabsList = page.locator(getTestId("tabs"));
+    this.goBackButton = page.locator(getTestId("go-back"));
+    this.goForwardButton = page.locator(getTestId("go-forward"));
+    this.newTabButton = page.locator(getTestId("New tab"));
+    this.undoButton = page.locator(getTestId("Undo"));
+    this.redoButton = page.locator(getTestId("Redo"));
+  }
+
+  async waitForLoading(title?: string, content?: string) {
+    await this.title.waitFor();
+
+    await this.page.waitForFunction(
+      ({ expected }) => {
+        const titleInput = document.querySelector(
+          `.active [data-test-id="editor-title"]`
+        ) as HTMLInputElement | null;
+        if (titleInput)
+          return expected !== undefined
+            ? titleInput.value === expected
+            : titleInput.value.length > 0;
+        return false;
+      },
+      { expected: title }
+    );
+
+    if (content !== undefined) {
+      await this.waitForContent(content);
+    }
+  }
+
+  async waitForUnloading() {
+    await this.searchButton.isDisabled();
+    await this.page
+      .locator(".active")
+      .locator(getTestId("editor-tag-input"))
+      .isDisabled();
+    await this.dateEditedText.waitFor({ state: "hidden" });
+    await this.wordCountText.waitFor();
+    await this.waitForLoading("", "");
+  }
+
+  async waitForSaving() {
+    await this.page.locator(".active").locator(getTestId("tags")).waitFor();
+    await this.searchButton.waitFor();
+    await this.wordCountText.waitFor();
+  }
+
+  async waitForContent(text: string, timeout = 10000) {
+    await this.page.waitForFunction(
+      ({ expected }) => {
+        const contentElement = document.querySelector(
+          `.active .ProseMirror`
+        ) as HTMLElement | null;
+        if (contentElement)
+          return contentElement.innerText
+            .replace(/\s+/g, "")
+            .includes(expected.replace(/\s+/g, ""));
+        return false;
+      },
+      { expected: text },
+      { timeout }
+    );
+  }
+
+  async waitForTitle(title: string, timeout = 10000) {
+    await this.page.waitForFunction(
+      ({ expected }) => {
+        const titleInput = document.querySelector(
+          `.active [data-test-id="editor-title"]`
+        ) as HTMLInputElement | null;
+        if (titleInput)
+          return expected !== undefined
+            ? titleInput.value === expected
+            : titleInput.value.length > 0;
+        return false;
+      },
+      { expected: title },
+      {
+        timeout
+      }
+    );
+  }
+
+  async isUnloaded() {
+    return (
+      (await this.tagInput.isDisabled()) &&
+      (await this.enterFullscreenButton.isHidden()) &&
+      (await this.dateEditedText.isHidden())
+    );
+  }
+
+  async setTitle(text: string) {
+    await this.editAndWait(async () => {
+      await this.title.fill(text);
+    });
+  }
+
+  async typeTitle(text: string, delay = 0) {
+    await this.editAndWait(async () => {
+      await this.title.focus();
+      await this.title.selectText();
+      await this.title.press("ArrowRight");
+      await this.title.pressSequentially(text, { delay });
+    });
+  }
+
+  async setContent(text: string) {
+    await this.editAndWait(async () => {
+      await this.content.focus();
+      await this.content.pressSequentially(text);
+      await this.waitForContent(text);
+    });
+  }
+
+  async clear() {
+    await this.editAndWait(async () => {
+      await this.selectAll();
+      await this.content.press("Backspace");
+      await this.waitForContent("");
+    });
+  }
+
+  async editAndWait(action: () => Promise<void>) {
+    const oldDateEdited = await this.getDateEdited();
+    await action();
+    await this.page.waitForFunction(
+      ({ oldDateEdited }) => {
+        const dateEditedText = document.querySelector(
+          `[data-test-id="editor-date-edited"]`
+        );
+        const timestampText = dateEditedText?.getAttribute("title");
+        if (!timestampText) return false;
+        const timestamp = parseInt(timestampText);
+        return timestamp > oldDateEdited;
+      },
+      { oldDateEdited }
+    );
+  }
+
+  async getDateEdited() {
+    if (await this.dateEditedText.isHidden()) return 0;
+
+    const timestamp = await this.dateEditedText.getAttribute("title");
+    if (timestamp) return parseInt(timestamp);
+    return 0;
+  }
+
+  async selectAll() {
+    await this.content.focus();
+    await this.page.keyboard.press("ControlOrMeta+a");
+    await this.page.waitForTimeout(500);
+  }
+
+  async setTags(tags: string[]) {
+    for (const tag of tags) {
+      await this.tagInput.focus();
+      await this.tagInput.fill(tag);
+      await this.tagInput.press("Enter");
+      await this.tags
+        .locator("span", { hasText: new RegExp(`^${tag}$`) })
+        .waitFor();
+    }
+  }
+
+  async getTags() {
+    const tags: string[] = [];
+    const count = await this.tags.count();
+    for (let i = 0; i < count; ++i) {
+      const item = this.tags.nth(i);
+      const tag = await item.locator("span").textContent();
+      if (tag) tags.push(tag);
+    }
+    return tags;
+  }
+
+  async removeTags(tags: string[]) {
+    for (const tag of tags) {
+      const item = this.tags
+        .filter({ hasText: tag })
+        .getByTitle("Remove")
+        .first();
+      await item.click();
+    }
+  }
+
+  async getTitle() {
+    return this.title.inputValue();
+  }
+
+  async getContent(format: "html" | "text") {
+    return format === "html"
+      ? await this.content.innerHTML()
+      : (await this.content.innerText()).trim().replace(/\n+/gm, "\n");
+  }
+
+  async enterFocusMode() {
+    await this.focusModeButton.click();
+    await this.normalModeButton.waitFor();
+  }
+
+  async exitFocusMode() {
+    await this.normalModeButton.click();
+    await this.focusModeButton.waitFor();
+  }
+
+  async isFocusMode() {
+    return await this.normalModeButton.isVisible();
+  }
+
+  async enterFullscreen() {
+    await this.enterFullscreenButton.click();
+    await this.exitFullscreenButton.waitFor();
+  }
+
+  async exitFullscreen() {
+    await this.exitFullscreenButton.click();
+    await this.enterFullscreenButton.waitFor();
+  }
+
+  async isFullscreen() {
+    return await this.exitFullscreenButton.isVisible();
+  }
+
+  async getWordCount() {
+    return parseInt(
+      (await this.wordCountText.allInnerTexts())
+        .toString()
+        .replace(" words", "")
+    );
+  }
+
+  async findTab(id: string) {
+    for await (const item of iterateList(this.tabsList.locator(".tab"))) {
+      const tabModel = new TabItemModel(item, this.page);
+      if ((await tabModel.getId()) === id) return tabModel;
+    }
+  }
+
+  async getTabs() {
+    const tabs: TabItemModel[] = [];
+    for await (const item of iterateList(this.tabsList.locator(".tab"))) {
+      tabs.push(new TabItemModel(item, this.page));
+    }
+    return tabs;
+  }
+
+  async goBack() {
+    await this.goBackButton.click();
+  }
+
+  async goForward() {
+    await this.goForwardButton.click();
+  }
+
+  async newTab() {
+    await this.newTabButton.click();
+  }
+
+  async attachImage() {
+    await this.page
+      .context()
+      .grantPermissions(["clipboard-read", "clipboard-write"]);
+    await this.page.evaluate(async () => {
+      const resp = await fetch("https://dummyjson.com/image/150");
+      const blob = await resp.blob();
+      window.navigator.clipboard.write([
+        new ClipboardItem({
+          "image/png": new Blob([blob], { type: "image/png" })
+        })
+      ]);
+    });
+
+    await this.page.keyboard.down("ControlOrMeta");
+    await this.page.keyboard.press("KeyV");
+    await this.page.keyboard.up("ControlOrMeta");
+  }
+}

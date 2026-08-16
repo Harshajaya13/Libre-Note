@@ -1,0 +1,765 @@
+/*
+This file is part of the Notesnook project (https://notesnook.com/)
+
+Copyright (C) 2023 Streetwriters (Private) Limited
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+import { Flex, Text, Button, Input, Switch } from "@theme-ui/components";
+import Dialog from "../../components/dialog";
+import {
+  About,
+  Account,
+  Appearance,
+  Backup,
+  Behaviour,
+  CellphoneLock,
+  Desktop,
+  Documentation,
+  Editor,
+  Import,
+  Legal,
+  Loading,
+  Notification,
+  PasswordAndAuth,
+  Privacy,
+  Pro,
+  Servers,
+  ShieldLock,
+  Sync,
+  Inbox,
+  CircleEmpty
+} from "../../components/icons";
+import NavigationItem from "../../components/navigation-menu/navigation-item";
+import { FlexScrollContainer } from "../../components/scroll-container";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  DropdownSettingComponent,
+  Section,
+  SectionGroup,
+  SectionKeys,
+  Setting,
+  SettingsGroup
+} from "./types";
+import { ProfileSettings } from "./profile-settings";
+import { AuthenticationSettings } from "./auth-settings";
+import { useStore as useUserStore } from "../../stores/user-store";
+import { SyncSettings } from "./sync-settings";
+import { BehaviourSettings } from "./behaviour-settings";
+import { DesktopIntegrationSettings } from "./desktop-integration-settings";
+import { NotificationsSettings } from "./notifications-settings";
+
+import { BackupExportSettings } from "./backup-export-settings";
+import { ImporterSettings } from "./importer-settings";
+import { VaultSettings } from "./vault-settings";
+import { PrivacySettings } from "./privacy-settings";
+import { EditorSettings } from "./editor-settings";
+import {
+  AboutSettings,
+  LegalSettings,
+  SupportSettings
+} from "./other-settings";
+import { AppearanceSettings } from "./appearance-settings";
+import { debounce, useIsFeatureAvailable, usePromise } from "@notesnook/common";
+import { SubscriptionSettings } from "./subscription-settings";
+import { ScopedThemeProvider } from "../../components/theme-provider";
+import { AppLockSettings } from "./app-lock-settings";
+import { BaseDialogProps, DialogManager } from "../../common/dialog-manager";
+import { ServersSettings } from "./servers-settings";
+import { strings } from "@notesnook/intl";
+import { mdToHtml } from "../../utils/md";
+import { InboxSettings } from "./inbox-settings";
+import { withFeatureCheck } from "../../common";
+import { NotesnookCircleSettings } from "./notesnook-circle-settings";
+import { hashNavigate } from "../../navigation";
+
+type SettingsDialogProps = BaseDialogProps<false> & {
+  activeSection?: SectionKeys;
+};
+
+const sectionGroups: SectionGroup[] = [
+  {
+    key: "account",
+    title: strings.account(),
+    sections: [
+      { key: "profile", title: strings.profile(), icon: Account },
+      {
+        key: "subscription",
+        title: strings.subDetails(),
+        icon: Pro,
+        isHidden: () => !useUserStore.getState().isLoggedIn
+      },
+      {
+        key: "auth",
+        title: strings.authentication(),
+        icon: PasswordAndAuth,
+        isHidden: () => !useUserStore.getState().isLoggedIn
+      },
+      {
+        key: "sync",
+        title: strings.sync(),
+        icon: Sync,
+        isHidden: () => !useUserStore.getState().isLoggedIn
+      },
+      {
+        key: "circle",
+        title: "Notesnook Circle",
+        icon: CircleEmpty,
+        isHidden: () => !useUserStore.getState().isLoggedIn
+      },
+      {
+        key: "inbox",
+        title: "Inbox",
+        icon: Inbox,
+        isHidden: () => !useUserStore.getState().isLoggedIn
+      }
+    ]
+  },
+  {
+    key: "customization",
+    title: strings.customization(),
+    sections: [
+      { key: "appearance", title: strings.appearance(), icon: Appearance },
+      { key: "behaviour", title: strings.behaviour(), icon: Behaviour },
+      { key: "editor", title: strings.editor(), icon: Editor },
+      {
+        key: "desktop",
+        title: strings.desktopIntegration(),
+        icon: Desktop,
+        isHidden: () => !IS_DESKTOP_APP
+      },
+      {
+        key: "notifications",
+        title: strings.notifications(),
+        icon: Notification
+      },
+      { key: "servers", title: strings.servers(), icon: Servers }
+    ]
+  },
+  {
+    key: "import-export",
+    title: strings.importExport(),
+    sections: [
+      { key: "backup-export", title: strings.backupExport(), icon: Backup },
+      { key: "importer", title: strings.notesnookImporter(), icon: Import }
+    ]
+  },
+  {
+    key: "security",
+    title: strings.privacyAndSecurity(),
+    sections: [
+      { key: "app-lock", title: strings.appLock(), icon: CellphoneLock },
+      { key: "vault", title: strings.vault(), icon: ShieldLock },
+      { key: "privacy", title: strings.privacy(), icon: Privacy }
+    ]
+  },
+  {
+    key: "other",
+    title: strings.other(),
+    sections: [
+      { key: "legal", title: strings.legal(), icon: Legal },
+      { key: "support", title: strings.helpAndSupport(), icon: Documentation },
+      { key: "about", title: strings.about(), icon: About }
+    ]
+  }
+];
+
+const SettingsGroups = [
+  ...ProfileSettings,
+  ...AuthenticationSettings,
+  ...SyncSettings,
+  ...AppearanceSettings,
+  ...BehaviourSettings,
+  ...DesktopIntegrationSettings,
+  ...NotificationsSettings,
+  ...BackupExportSettings,
+  ...ImporterSettings,
+  ...AppLockSettings,
+  ...VaultSettings,
+  ...PrivacySettings,
+  ...EditorSettings,
+  ...LegalSettings,
+  ...SupportSettings,
+  ...AboutSettings,
+  ...SubscriptionSettings,
+  ...ServersSettings,
+  ...InboxSettings,
+  ...NotesnookCircleSettings
+];
+
+// Thoughts:
+// 1. Settings will be conditional
+//    - For example settings which have an enablement placeholder
+//    - Or settings that appear after another setting is enabled.
+//    - Or settings that are visible after a user signs in
+// 2. Settings will be synced so their state must be serializable
+// 3. Settings will be grouped
+//    - Where group header is customizable
+// 4. Sections/groups must be able to accommodate tips & tutorials for future.
+// 5. Settings will be stateful but independent such that any one setting
+// can appear independent of others (e.g. as a search result)
+
+export const SettingsDialog = DialogManager.register(function SettingsDialog(
+  props: SettingsDialogProps
+) {
+  const [activeSettings, setActiveSettings] = useState<SettingsGroup[]>(
+    SettingsGroups.filter(
+      (g) => g.section === (props.activeSection || "profile")
+    )
+  );
+
+  return (
+    <Dialog
+      isOpen={true}
+      width={"968px"}
+      onClose={() => props.onClose(false)}
+      noScroll
+      sx={{ bg: "transparent" }}
+    >
+      <Flex
+        sx={{
+          height: "80vw",
+          overflow: "hidden"
+        }}
+      >
+        <SettingsSideBar
+          activeSection={props.activeSection}
+          onNavigate={(settings) => {
+            const scrollbar = document.getElementById("settings-scrollbar");
+            if (scrollbar !== null) scrollbar.scrollTop = 0;
+            setActiveSettings(settings);
+          }}
+        />
+        <FlexScrollContainer
+          id="settings-scrollbar"
+          style={{
+            display: "flex",
+            backgroundColor: "var(--background)",
+            flex: 1,
+            flexDirection: "column",
+            padding: 20,
+            gap: 20,
+            minHeight: "auto",
+            overflow: "auto"
+          }}
+        >
+          {activeSettings.length > 0 ? (
+            activeSettings.map((group) => (
+              <SettingsGroupComponent item={group} />
+            ))
+          ) : (
+            <Text variant="body" sx={{ color: "paragraph-secondary" }}>
+              {strings.noResultsFound()}
+            </Text>
+          )}
+        </FlexScrollContainer>
+      </Flex>
+    </Dialog>
+  );
+});
+
+type SettingsSideBarProps = {
+  onNavigate: (settings: SettingsGroup[]) => void;
+  activeSection?: SectionKeys;
+};
+function SettingsSideBar(props: SettingsSideBarProps) {
+  const { onNavigate, activeSection } = props;
+  const [route, setRoute] = useState<SectionKeys>(activeSection || "profile");
+  useUserStore((store) => store.isLoggedIn);
+
+  useEffect(() => {
+    hashNavigate(`/settings/${route}`, {
+      notify: false
+    });
+  }, [route, activeSection]);
+
+  return (
+    <FlexScrollContainer
+      id="settings-side-menu"
+      className="theme-scope-navigationMenu"
+      style={{
+        width: 240,
+        overflow: "auto",
+        backgroundColor: "var(--background)"
+      }}
+      data-test-id="settings-navigation-menu"
+    >
+      <ScopedThemeProvider scope="navigationMenu" injectCssVars={false}>
+        <Flex
+          sx={{
+            flexDirection: "column",
+            display: "flex",
+            overflow: "hidden",
+            gap: 2
+          }}
+        >
+          <Input
+            id="search"
+            name="search"
+            autoFocus
+            placeholder={strings.search()}
+            data-test-id="settings-search"
+            sx={{
+              m: 1,
+              width: "auto",
+              bg: "background",
+              py: "7px"
+            }}
+            onChange={(e) => {
+              const query = e.target.value.toLowerCase().trim();
+              if (!query)
+                return onNavigate(
+                  SettingsGroups.filter((g) => g.section === route)
+                );
+
+              let groups: SettingsGroup[] = [];
+              for (const group of SettingsGroups) {
+                const section = findSection(group.section);
+                if (section?.isHidden?.() || group.isHidden?.()) continue;
+
+                const isTitleMatch =
+                  typeof group.header === "string" &&
+                  group.header.toLowerCase().includes(query);
+                const isSectionMatch = group.section
+                  .toLowerCase()
+                  .includes(query);
+
+                if (isTitleMatch || isSectionMatch) {
+                  groups.push(group);
+                  continue;
+                }
+
+                const settings = group.settings.filter((setting) => {
+                  const description =
+                    typeof setting.description === "function"
+                      ? setting.description()
+                      : setting.description;
+
+                  return [
+                    description || "",
+                    setting.keywords?.join(" ") || "",
+                    setting.title
+                  ]
+                    .join(" ")
+                    ?.toLowerCase()
+                    .includes(query);
+                });
+                if (!settings.length) continue;
+                groups.push({ ...group, settings });
+              }
+              const matchedSections = findSections(query);
+              if (matchedSections.length > 0) {
+                const matchedGroups = SettingsGroups.filter((g) =>
+                  matchedSections.some((s) => s.key === g.section)
+                );
+                // remove groups whose sections were matched to avoid duplicate
+                // entries.
+                groups = groups.filter(
+                  (g) => !matchedGroups.some((mg) => mg.section === g.section)
+                );
+                groups.push(...matchedGroups);
+              }
+              onNavigate(groups);
+            }}
+          />
+          {sectionGroups.map((group) => (
+            <Flex
+              key={group.key}
+              sx={{ flexDirection: "column", mx: 1, gap: "small" }}
+            >
+              <Text
+                variant={"subBody"}
+                sx={{
+                  fontWeight: "bold",
+                  color: "heading",
+                  mb: 1,
+                  ml: 1,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  wordSpacing: "nowrap"
+                }}
+              >
+                {group.title}
+              </Text>
+              {group.sections.map(
+                (section) =>
+                  (!section.isHidden || !section.isHidden()) && (
+                    <NavigationItem
+                      key={section.key}
+                      icon={section.icon}
+                      title={section.title}
+                      selected={section.key === route}
+                      onClick={() => {
+                        onNavigate(
+                          SettingsGroups.filter(
+                            (g) => g.section === section.key
+                          )
+                        );
+                        setRoute(section.key);
+                      }}
+                    />
+                  )
+              )}
+            </Flex>
+          ))}
+        </Flex>
+      </ScopedThemeProvider>
+    </FlexScrollContainer>
+  );
+}
+
+function SettingsGroupComponent(props: { item: SettingsGroup }) {
+  const { item } = props;
+  const { onRender, onStateChange } = item;
+
+  const [_, setState] = useState<unknown>();
+
+  useEffect(() => {
+    onRender?.();
+  }, [onRender]);
+
+  useEffect(() => {
+    const unsubscribe = onStateChange?.(setState);
+    return () => {
+      unsubscribe?.();
+    };
+  }, [onStateChange]);
+
+  const allHidden = item.settings.every((s) => s.isHidden?.());
+  const hasComponentHeader = typeof item.header !== "string";
+  if (item.isHidden?.() || (allHidden && !hasComponentHeader)) return null;
+
+  return (
+    <Flex
+      sx={{
+        flexDirection: "column",
+        flexShrink: 0,
+        gap: 2,
+        overflow: "hidden"
+      }}
+    >
+      {typeof item.header === "string" ? (
+        <Text
+          variant="subBody"
+          sx={{
+            fontSize: 11,
+            fontWeight: "bold",
+            letterSpacing: 0.3,
+            color: "accent"
+          }}
+        >
+          {item.header.toUpperCase()}
+        </Text>
+      ) : (
+        <item.header />
+      )}
+      {item.settings.map((setting) => (
+        <SettingItem key={setting.key} item={setting} />
+      ))}
+    </Flex>
+  );
+}
+
+function SettingItem(props: { item: Setting }) {
+  const { item } = props;
+  const [state, setState] = useState<unknown>();
+  const [workIndex, setWorkIndex] = useState<number>();
+  const feature = useIsFeatureAvailable(item.featureId);
+
+  useEffect(() => {
+    if (!item.onStateChange) return;
+    const unsubscribe = item.onStateChange((state) => setState(state));
+    return () => {
+      unsubscribe?.();
+    };
+  }, [item]);
+
+  const workWithLoading = useCallback(
+    async (index: number, action: () => Promise<unknown> | void) => {
+      if (workIndex) return;
+      try {
+        setWorkIndex(index);
+        await action();
+      } finally {
+        setWorkIndex(undefined);
+      }
+    },
+    [workIndex]
+  );
+
+  if (item.isHidden && item.isHidden(state)) return null;
+
+  const components =
+    typeof item.components === "function"
+      ? item.components(state)
+      : item.components;
+
+  return (
+    <Flex
+      sx={{
+        flexDirection: "column",
+        pb: 4,
+        borderBottom: "1px solid var(--separator)"
+      }}
+      data-test-id={`setting-${item.key}`}
+    >
+      <Flex
+        sx={{
+          flexDirection: "row",
+          justifyContent: "space-between",
+          alignItems: "start",
+          gap: 4
+        }}
+      >
+        <Flex sx={{ flexDirection: "column", flex: 1 }}>
+          <Flex sx={{ alignItems: "center", gap: 1 }}>
+            <Text
+              variant={"body"}
+              sx={{ fontWeight: "medium", color: "heading" }}
+            >
+              {item.title}
+            </Text>
+            {feature && !feature.isAllowed ? (
+              <Pro size={14} color="orange" />
+            ) : null}
+          </Flex>
+          {item.description && (
+            <Text
+              as={"div"}
+              variant={"body"}
+              sx={{ mt: 1, color: "paragraph", whiteSpace: "pre-wrap" }}
+              dangerouslySetInnerHTML={{
+                __html: mdToHtml(
+                  typeof item.description === "function"
+                    ? item.description(state)
+                    : item.description
+                )
+              }}
+            />
+          )}
+        </Flex>
+
+        <Flex
+          sx={{
+            alignItems: "center",
+            justifyContent: "end",
+            gap: 2,
+            "& > label": { width: "auto" },
+            "& > *": { flexShrink: 0 }
+          }}
+        >
+          {components.map((component, index) => {
+            switch (component.type) {
+              case "button":
+                return (
+                  <Button
+                    disabled={workIndex === index}
+                    title={component.title}
+                    variant={component.variant}
+                    onClick={withFeatureCheck(feature, () =>
+                      workWithLoading(index, component.action)
+                    )}
+                  >
+                    {workIndex === index ? (
+                      <Loading size={18} sx={{ mr: 2 }} />
+                    ) : (
+                      component.title
+                    )}
+                  </Button>
+                );
+              case "toggle":
+                return (
+                  <Switch
+                    sx={{
+                      m: 0,
+                      background: component.isToggled()
+                        ? "accent"
+                        : "icon-secondary"
+                    }}
+                    disabled={workIndex === index}
+                    onChange={withFeatureCheck(feature, () =>
+                      workWithLoading(index, component.toggle)
+                    )}
+                    checked={component.isToggled()}
+                    data-checked={component.isToggled()}
+                  />
+                );
+              case "dropdown":
+                return (
+                  <SelectComponent
+                    {...component}
+                    onSelectionChanged={withFeatureCheck(feature, (value) =>
+                      component.onSelectionChanged(value)
+                    )}
+                  />
+                );
+              case "input":
+                return component.inputType === "number" ? (
+                  <NumberInput
+                    key={component.defaultValue()}
+                    min={component.min}
+                    max={component.max}
+                    step={component.step}
+                    defaultValue={component.defaultValue()}
+                    onChange={(value) => component.onChange(value)}
+                  />
+                ) : (
+                  <Input
+                    type={"text"}
+                    defaultValue={component.defaultValue()}
+                    sx={{ width: 250, mr: 1 }}
+                    onChange={debounce(
+                      (e) => component.onChange(e.target.value),
+                      500
+                    )}
+                    onBlur={(e) => component.onChange(e.target.value)}
+                  />
+                );
+              case "icon":
+                return (
+                  <component.icon
+                    size={component.size}
+                    color={component.color}
+                  />
+                );
+              default:
+                return null;
+            }
+          })}
+        </Flex>
+      </Flex>
+      {components.map((component) =>
+        component.type === "custom" ? (
+          <component.component key={item.key} />
+        ) : null
+      )}
+    </Flex>
+  );
+}
+
+export function SelectComponent(props: Omit<DropdownSettingComponent, "type">) {
+  const { onSelectionChanged, options } = props;
+  const selectedOption = usePromise(() => props.selectedOption(), [props]);
+
+  return (
+    <select
+      style={{
+        backgroundColor: "var(--background-secondary)",
+        outline: "none",
+        border: "1px solid var(--border-secondary)",
+        borderRadius: "5px",
+        color: "var(--paragraph)",
+        padding: "5px",
+        overflow: "hidden"
+      }}
+      value={
+        selectedOption.status === "fulfilled" ? selectedOption.value : undefined
+      }
+      onChange={(e) =>
+        onSelectionChanged((e.target as HTMLSelectElement).value)
+      }
+    >
+      {options.map((option) => (
+        <option
+          key={option.value}
+          value={option.value}
+          disabled={option.disabled}
+        >
+          {option.title}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+type NumberInputProps = {
+  min: number;
+  max: number;
+  step?: number;
+  defaultValue: number;
+  onChange: (value: number) => void;
+};
+
+function NumberInput({
+  min,
+  max,
+  step,
+  defaultValue,
+  onChange
+}: NumberInputProps) {
+  const [isInputValid, setIsInputValid] = useState(true);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  return (
+    <Flex sx={{ flexDirection: "column", alignItems: "flex-end" }}>
+      <Input
+        ref={inputRef}
+        type={"number"}
+        min={min}
+        max={max}
+        step={step}
+        defaultValue={defaultValue}
+        sx={{
+          width: 80,
+          mr: 1,
+          outline: isInputValid
+            ? undefined
+            : "2px solid var(--accent-error) !important"
+        }}
+        onChange={debounce((e) => {
+          const value = e.target.valueAsNumber;
+          const isValid = !Number.isNaN(value) && value >= min && value <= max;
+          setIsInputValid(isValid);
+          if (isValid) onChange(value);
+        }, 500)}
+        onBlur={(e) => {
+          const raw = e.target.valueAsNumber;
+          const clamped =
+            Number.isNaN(raw) || raw < min ? min : raw > max ? max : raw;
+          if (inputRef.current) inputRef.current.value = String(clamped);
+          setIsInputValid(true);
+          onChange(clamped);
+        }}
+      />
+      {!isInputValid && (
+        <Text
+          variant="subBody"
+          sx={{ fontSize: 11, color: "error", mt: 1, mr: 1 }}
+        >
+          {strings.valueMustBeBetween(min, max)}
+        </Text>
+      )}
+    </Flex>
+  );
+}
+
+function findSection(key: SectionKeys) {
+  for (const group of sectionGroups) {
+    const section = group.sections.find((s) => s.key === key);
+    if (section) return section;
+  }
+  return null;
+}
+
+function findSections(query: string) {
+  const sections: Section[] = [];
+  for (const group of sectionGroups) {
+    for (const section of group.sections) {
+      if (section.isHidden?.()) continue;
+      if (section.title.toLowerCase().includes(query)) sections.push(section);
+    }
+  }
+  return sections;
+}

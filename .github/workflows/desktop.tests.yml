@@ -1,0 +1,155 @@
+name: Test @notesnook/desktop
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "master"
+    paths:
+      - "apps/desktop/**"
+      # re-run workflow if workflow file changes
+      - ".github/workflows/desktop.tests.yml"
+  pull_request:
+    branches:
+      - "master"
+    paths:
+      - "apps/desktop/**"
+      # re-run workflow if workflow file changes
+      - ".github/workflows/desktop.tests.yml"
+
+jobs:
+  test-macos-x64:
+    name: Test macOS x64
+    runs-on: macos-15-intel
+
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: ./.github/actions/setup-node-with-cache
+
+      - name: Install packages
+        run: |
+          npm ci --ignore-scripts --prefer-offline --no-audit
+          npm run bootstrap -- --scope=web
+
+      - name: Install sqlite-better-trigram for all arch
+        run: |
+          npm i --cpu x64 sqlite-better-trigram
+          npm i --cpu x64 sqlite3-fts5-html
+        working-directory: ./apps/desktop
+
+      - name: Run tests x64
+        run: npm run test
+        working-directory: ./apps/desktop
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-results-macos-x64
+          path: apps/desktop/test-results
+          retention-days: 5
+
+  test-macos:
+    name: Test macOS
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: ./.github/actions/setup-node-with-cache
+
+      - name: Install packages
+        run: |
+          npm ci --ignore-scripts --prefer-offline --no-audit
+          npm run bootstrap -- --scope=web
+
+      - name: Install sqlite-better-trigram for all arch
+        run: |
+          npm i --cpu arm64 sqlite-better-trigram
+          npm i --cpu arm64 sqlite3-fts5-html
+        working-directory: ./apps/desktop
+
+      - name: Run tests arm64
+        run: npm run test
+        working-directory: ./apps/desktop
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-results-macos
+          path: apps/desktop/test-results
+          retention-days: 5
+
+  test-linux:
+    name: Test for Linux
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: ./.github/actions/setup-node-with-cache
+
+      - name: Install packages
+        run: |
+          npm ci --ignore-scripts --prefer-offline --no-audit
+          npm run bootstrap -- --scope=web
+
+      - name: Install sqlite-better-trigram for all arch
+        run: |
+          npm i --cpu x64 sqlite-better-trigram
+          npm i --cpu x64 sqlite3-fts5-html
+        working-directory: ./apps/desktop
+
+      - name: Run tests
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" -- npm run test
+        working-directory: ./apps/desktop
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-results-linux
+          path: apps/desktop/test-results
+          retention-days: 5
+
+  test-windows:
+    name: Test for Windows
+    runs-on: windows-2022
+
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: ./.github/actions/setup-node-with-cache
+
+      - name: Install packages
+        run: |
+          npm ci --ignore-scripts --prefer-offline --no-audit
+          npm run bootstrap -- --scope=web
+
+      - name: Install sqlite-better-trigram for all arch
+        run: |
+          npm i --cpu x64 sqlite-better-trigram
+          npm i --cpu x64 sqlite3-fts5-html
+        working-directory: ./apps/desktop
+
+      - name: Run tests
+        run: npm run test
+        working-directory: ./apps/desktop
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-results-win
+          path: apps/desktop/test-results
+          retention-days: 5

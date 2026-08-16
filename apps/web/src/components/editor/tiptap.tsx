@@ -1,0 +1,827 @@
+/*
+This file is part of the Notesnook project (https://notesnook.com/)
+
+Copyright (C) 2023 Streetwriters (Private) Limited
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+import "@notesnook/editor/styles/styles.css";
+import "@notesnook/editor/styles/katex.min.css";
+import "@notesnook/editor/styles/katex-fonts.css";
+import "@notesnook/editor/styles/fonts.css";
+import {
+  Toolbar,
+  useTiptap,
+  Editor,
+  AttachmentType,
+  usePermissionHandler,
+  getHTMLFromFragment,
+  Fragment,
+  type DownloadOptions,
+  getTotalWords,
+  countWords,
+  getFontById,
+  TiptapOptions,
+  Attachment,
+  getTableOfContents,
+  getChangedNodes,
+  LinkAttributes,
+  type Selection
+} from "@notesnook/editor";
+import { Box, Flex } from "@theme-ui/components";
+import {
+  PropsWithChildren,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef
+} from "react";
+import { IEditor, MAX_AUTO_SAVEABLE_WORDS } from "./types";
+import { useEditorConfig, useToolbarConfig, useEditorManager } from "./manager";
+import { useStore as useSettingsStore } from "../../stores/setting-store";
+import { useStore as useUserStore } from "../../stores/user-store";
+import { debounce, useAreFeaturesAvailable } from "@notesnook/common";
+import { ScopedThemeProvider } from "../theme-provider";
+import { useStore as useThemeStore } from "../../stores/theme-store";
+import { writeToClipboard } from "../../utils/clipboard";
+import { useEditorStore } from "../../stores/editor-store";
+import { DayFormat, parseInternalLink } from "@notesnook/core";
+import { desktop } from "../../common/desktop-bridge";
+import Skeleton from "react-loading-skeleton";
+import useMobile from "../../hooks/use-mobile";
+import useTablet from "../../hooks/use-tablet";
+import { TimeFormat } from "@notesnook/core";
+import { EDITOR_ZOOM } from "./common";
+import { ScrollContainer } from "@notesnook/ui";
+import { showFeatureNotAllowedToast } from "../../common/toasts";
+import { UpgradeDialog } from "../../dialogs/buy-dialog/upgrade-dialog";
+import { ConfirmDialog } from "../../dialogs/confirm";
+import { strings } from "@notesnook/intl";
+import { handleInternalLink } from "../../common";
+import { db } from "../../common/db";
+import { showToast } from "../../utils/toast";
+
+export type OnChangeHandler = (
+  content: () => string,
+  ignoreEdit: boolean
+) => void;
+type TipTapProps = {
+  id: string;
+  editorContainer: () => HTMLElement | undefined;
+  onLoad?: (editor?: IEditor) => void;
+  onChange?: OnChangeHandler;
+  onContentChange?: () => void;
+  onSelectionChange?: (range: { from: number; to: number }) => void;
+  onInsertAttachment?: (type: AttachmentType) => void;
+  onDownloadAttachment?: (attachment: Attachment) => void;
+  onPreviewAttachment?: (attachment: Attachment) => void;
+  onGetAttachmentData?:
+    | ((
+        attachment: Pick<Attachment, "hash" | "type">
+      ) => Promise<string | undefined>)
+    | undefined;
+  onAttachFiles?: (files: File[]) => void;
+  onInsertInternalLink?: (
+    attributes?: LinkAttributes
+  ) => Promise<LinkAttributes | undefined>;
+  onAttachFile?: (file: File) => void;
+  onFocus?: () => void;
+  onAutoSaveDisabled: () => void;
+  content?: () => string | undefined;
+  readonly?: boolean;
+  spellcheck?: boolean;
+  nonce?: number;
+  isMobile?: boolean;
+  isTablet?: boolean;
+  downloadOptions?: DownloadOptions;
+  fontSize: number;
+  fontFamily: string;
+
+  doubleSpacedLines: boolean;
+  dateFormat: string;
+  timeFormat: TimeFormat;
+  dayFormat: DayFormat;
+  markdownShortcuts: boolean;
+  fontLigatures: boolean;
+};
+
+function countCharacters(text: string) {
+  return text.length;
+}
+
+function countParagraphs(fragment: Fragment) {
+  let count = 0;
+  fragment.nodesBetween(0, fragment.size, (node) => {
+    if (node.type.name === "paragraph" && node.content.size > 0) {
+      count++;
+    }
+    return true;
+  });
+  return count;
+}
+
+function countSpaces(text: string) {
+  return (text.match(/ /g) || []).length;
+}
+
+function updateNoteStatistics(id: string, content: () => Fragment) {
+  const fragment = content();
+  const documentText = fragment.textBetween(0, fragment.size, "\n", " ");
+  useEditorManager.getState().updateEditor(id, {
+    statistics: {
+      words: {
+        total: countWords(documentText),
+        selected: 0
+      },
+      characters: {
+        total: countCharacters(removeNewlineCharacters(documentText)),
+        selected: 0
+      },
+      paragraphs: {
+        total: countParagraphs(fragment),
+        selected: 0
+      },
+      spaces: {
+        total: countSpaces(documentText),
+        selected: 0
+      }
+    }
+  });
+}
+
+const deferredUpdateNoteStatistics = debounce(updateNoteStatistics, 1000);
+
+function TipTap(props: TipTapProps) {
+  const {
+    id,
+    onSelectionChange,
+    onLoad,
+    onChange,
+    onInsertAttachment,
+    onDownloadAttachment,
+    onPreviewAttachment,
+    onGetAttachmentData,
+    onAttachFiles,
+    onInsertInternalLink,
+    onContentChange,
+    onFocus = () => {},
+    onAutoSaveDisabled,
+    content,
+    editorContainer,
+    readonly,
+    nonce,
+    downloadOptions,
+    fontSize,
+    fontFamily,
+    doubleSpacedLines,
+    dateFormat,
+    timeFormat,
+    dayFormat,
+    markdownShortcuts,
+    fontLigatures
+  } = props;
+
+  const autoSave = useRef(true);
+  const { toolbarConfig } = useToolbarConfig();
+  const features = useAreFeaturesAvailable([
+    "callout",
+    "outlineList",
+    "taskList",
+    "exportTableAsCsv",
+    "importCsvToTable"
+  ]);
+
+  usePermissionHandler({
+    claims: {
+      callout: !!features?.callout?.isAllowed,
+      outlineList: !!features?.outlineList?.isAllowed,
+      taskList: !!features?.taskList?.isAllowed,
+      insertAttachment: !!useUserStore.getState().isLoggedIn,
+      exportTableAsCsv: !!features?.exportTableAsCsv?.isAllowed,
+      importCsvToTable: !!features?.importCsvToTable?.isAllowed
+    },
+    onPermissionDenied: (claim, silent) => {
+      if (claim === "insertAttachment") {
+        ConfirmDialog.show({
+          title: strings.notLoggedIn(),
+          message: strings.loginToUploadAttachments(),
+          positiveButtonText: strings.okay()
+        });
+        return;
+      }
+
+      if (silent) {
+        console.log(features, features?.[claim]);
+        if (features?.[claim]) showFeatureNotAllowedToast(features[claim]);
+        return;
+      }
+
+      if (features)
+        UpgradeDialog.show({
+          feature: features[claim]
+        });
+    }
+  });
+
+  const oldNonce = useRef<number>();
+
+  const tiptapOptions = useMemo<Partial<TiptapOptions>>(() => {
+    return {
+      editorProps: {
+        handleKeyDown(_, event) {
+          if ((event.ctrlKey || event.metaKey) && event.key === "s") {
+            event.preventDefault();
+            onChange?.(
+              () =>
+                getHTMLFromFragment(editor.state.doc.content, editor.schema),
+              false
+            );
+          }
+        },
+        handlePaste: (view, event) => {
+          const hasText = event.clipboardData?.types?.some((type) =>
+            type.startsWith("text/")
+          );
+          // we always give preference to text over files & skip any attached
+          // files if there is text.
+          // TODO: give user an actionable hint to allow them to select what they
+          // want to do in such cases.
+          if (!hasText && event.clipboardData?.files?.length && onAttachFiles) {
+            event.preventDefault();
+            event.stopPropagation();
+            onAttachFiles(Array.from(event.clipboardData.files));
+            return true;
+          }
+        }
+      },
+      enableInputRules: markdownShortcuts,
+      enableFontLigatures: fontLigatures,
+      downloadOptions,
+      doubleSpacedLines,
+      dateFormat,
+      timeFormat,
+      dayFormat,
+      element: editorContainer(),
+      editable: !readonly,
+      content: content?.(),
+      autofocus: "start",
+      onFocus,
+      onCreate: async ({ editor }) => {
+        if (oldNonce.current !== nonce)
+          editor.commands.focus("start", { scrollIntoView: true });
+        oldNonce.current = nonce;
+
+        const instance = toIEditor(editor as Editor);
+        if (onLoad) onLoad(instance);
+
+        const totalWords = getTotalWords(editor as Editor);
+        useEditorManager.getState().setEditor(id, {
+          editor: instance,
+          canRedo: editor.can().redo(),
+          canUndo: editor.can().undo(),
+          statistics: {
+            words: {
+              total: totalWords,
+              selected: 0
+            },
+            characters: {
+              total: countCharacters(editor.state.doc.textContent),
+              selected: 0
+            },
+            paragraphs: {
+              total: countParagraphs(editor.state.doc.content),
+              selected: 0
+            },
+            spaces: {
+              total: countSpaces(editor.state.doc.textContent),
+              selected: 0
+            }
+          },
+          tableOfContents: getTableOfContents(editor.view.dom)
+        });
+      },
+      onUpdate: ({ editor, transaction }) => {
+        const changedHeadings = getChangedNodes(transaction, {
+          descend: true,
+          predicate: (n) => n.isBlock && n.type.name === "heading"
+        });
+        if (changedHeadings.length > 0) {
+          useEditorManager.getState().updateEditor(id, {
+            tableOfContents: getTableOfContents(editor.view.dom)
+          });
+        }
+
+        onContentChange?.();
+
+        deferredUpdateNoteStatistics(id, () => editor.state.doc.content);
+
+        const preventSave = transaction?.getMeta("preventSave") as boolean;
+        const ignoreEdit = transaction.getMeta("ignoreEdit") as boolean;
+        if (ignoreEdit || preventSave || !editor.isEditable || !onChange)
+          return;
+
+        if (!autoSave.current) return;
+
+        onChange(
+          () => getHTMLFromFragment(editor.state.doc.content, editor.schema),
+          ignoreEdit
+        );
+      },
+      onDestroy: () => {
+        useEditorManager.getState().setEditor(id);
+      },
+      onTransaction: ({ editor, transaction }) => {
+        useEditorManager.getState().updateEditor(id, {
+          canRedo: editor.can().redo(),
+          canUndo: editor.can().undo(),
+          tableOfContents: transaction.getMeta("isUpdatingContent")
+            ? getTableOfContents(editor.view.dom)
+            : useEditorManager.getState().getEditor(id)?.tableOfContents
+        });
+      },
+      copyToClipboard(text, html) {
+        writeToClipboard({ "text/plain": text, "text/html": html });
+      },
+      onSelectionUpdate: debounce(({ editor, transaction }) => {
+        const isEmptySelection = transaction.selection.empty;
+        if (onSelectionChange) onSelectionChange(transaction.selection);
+        useEditorManager.getState().updateEditor(id, (old) => {
+          const oldSelected = old.statistics?.words?.selected;
+          const oldWords = old.statistics?.words.total || 0;
+          const oldParagraphs = old.statistics?.paragraphs.total || 0;
+          const oldSpaces = old.statistics?.spaces.total || 0;
+          const oldCharacters = old.statistics?.characters.total || 0;
+          if (isEmptySelection) {
+            return oldSelected
+              ? {
+                  statistics: {
+                    words: { total: oldWords, selected: 0 },
+                    characters: {
+                      total: oldCharacters,
+                      selected: 0
+                    },
+                    paragraphs: {
+                      total: oldParagraphs,
+                      selected: 0
+                    },
+                    spaces: {
+                      total: oldSpaces,
+                      selected: 0
+                    }
+                  }
+                }
+              : old;
+          }
+
+          const selectedText = editor.state.doc.textBetween(
+            transaction.selection.from,
+            transaction.selection.to,
+            "\n",
+            " "
+          );
+          const selectedWords = countWords(selectedText);
+          const selectedSpaces = countSpaces(selectedText);
+          const selectedParagraphs = getSelectedParagraphs(
+            editor as Editor,
+            transaction.selection
+          );
+          const selectedCharacters = countCharacters(
+            removeNewlineCharacters(selectedText)
+          );
+          return {
+            statistics: {
+              words: {
+                total: oldWords,
+                selected: selectedWords
+              },
+              characters: {
+                total: oldCharacters,
+                selected: selectedCharacters
+              },
+              paragraphs: {
+                total: oldParagraphs,
+                selected: selectedParagraphs
+              },
+              spaces: {
+                total: oldSpaces,
+                selected: selectedSpaces
+              }
+            }
+          };
+        });
+      }, 500),
+      openAttachmentPicker: onInsertAttachment,
+      downloadAttachment: onDownloadAttachment,
+      previewAttachment: onPreviewAttachment,
+      createInternalLink: onInsertInternalLink,
+      getAttachmentData: onGetAttachmentData,
+      openLink: async (url, openInNewTab) => {
+        const link = parseInternalLink(url);
+        if (link) handleInternalLink(url, openInNewTab);
+        else if (url.startsWith("file:")) {
+          if (!IS_DESKTOP_APP) {
+            showToast("error", strings.cantOpenFileLinksInBrowsers());
+            return;
+          }
+
+          await desktop?.integration.openPath.query({
+            type: "path",
+            link: url
+          });
+        } else window.open(url, "_blank");
+      },
+      getLinkData: async (url) => {
+        const link = parseInternalLink(url);
+        if (!link) return;
+
+        switch (link.type) {
+          case "note":
+          case "notebook":
+          case "tag": {
+            const table =
+              link.type === "note"
+                ? "notes"
+                : link.type === "notebook"
+                ? "notebooks"
+                : "tags";
+            const item = await db
+              .sql()
+              .selectFrom(table)
+              .where("id", "=", link.id)
+              .select("title")
+              .executeTakeFirst();
+            return {
+              type: link.type,
+              title: item?.title || ""
+            };
+          }
+          case "color": {
+            const color = await db
+              .sql()
+              .selectFrom("colors")
+              .where("id", "=", link.id)
+              .select(["title", "colorCode"])
+              .executeTakeFirst();
+            return {
+              type: "color",
+              title: color?.title || "",
+              metadata: {
+                colorCode: color?.colorCode || ""
+              }
+            };
+          }
+        }
+      }
+    };
+  }, [
+    content,
+    readonly,
+    doubleSpacedLines,
+    dateFormat,
+    timeFormat,
+    dayFormat,
+    markdownShortcuts,
+    fontLigatures
+  ]);
+
+  const editor = useTiptap(
+    tiptapOptions,
+    // IMPORTANT: only put stuff here that the editor depends on.
+    [tiptapOptions]
+  );
+
+  useEffect(() => {
+    function onClick(e: MouseEvent) {
+      if (e.target !== editor.view.dom || !editor.state.selection.empty) return;
+
+      const lastNode = editor.state.doc.lastChild;
+      const isLastNodeParagraph = lastNode?.type.name === "paragraph";
+      const isEmpty = lastNode?.nodeSize === 2;
+      if (!isLastNodeParagraph || !isEmpty) {
+        e.preventDefault();
+        editor
+          ?.chain()
+          .insertContentAt(editor.state.doc.nodeSize - 2, "<p></p>")
+          .focus("end")
+          .run();
+      }
+    }
+    editor.view.dom.addEventListener("click", onClick);
+    return () => {
+      editor.view.dom.removeEventListener("click", onClick);
+    };
+  }, [editor]);
+
+  useEffect(() => {
+    const unsubscribe = useEditorManager.subscribe(
+      (s) => s.editors[id]?.statistics?.words.total,
+      (totalWords) => {
+        autoSave.current = !totalWords || totalWords < MAX_AUTO_SAVEABLE_WORDS;
+        if (!autoSave.current) {
+          onAutoSaveDisabled();
+        }
+      }
+    );
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
+  return (
+    <>
+      <ScopedThemeProvider
+        scope="editorToolbar"
+        sx={{
+          width: "100%",
+          position: "sticky",
+          top: 0,
+          bg: "background",
+          zIndex: 2
+        }}
+      >
+        <ScrollContainer
+          className="toolbarScroll"
+          suppressScrollY
+          style={{ display: "flex", overscrollBehavior: "contain" }}
+          trackStyle={() => ({
+            backgroundColor: "transparent",
+            "--ms-track-size": "6px"
+          })}
+          thumbStyle={() => ({ height: 3 })}
+          onWheel={(e) => {
+            const scrollcontainer = document.querySelector(
+              ".active .toolbarScroll"
+            );
+            if (!scrollcontainer) return;
+            if (e.deltaY > 0) scrollcontainer.scrollLeft += 100;
+            else if (e.deltaY < 0) scrollcontainer.scrollLeft -= 100;
+          }}
+        >
+          <Toolbar
+            editor={editor}
+            location={"top"}
+            sx={{
+              flexWrap: "unset",
+              overflowX: "unset"
+            }}
+            tools={toolbarConfig}
+            defaultFontFamily={fontFamily}
+            defaultFontSize={fontSize}
+          />
+        </ScrollContainer>
+      </ScopedThemeProvider>
+    </>
+  );
+}
+
+function TiptapWrapper(
+  props: PropsWithChildren<
+    Omit<
+      TipTapProps,
+      | "editorContainer"
+      | "theme"
+      | "fontSize"
+      | "fontFamily"
+      | "doubleSpacedLines"
+      | "dateFormat"
+      | "timeFormat"
+      | "dayFormat"
+      | "markdownShortcuts"
+      | "fontLigatures"
+    >
+  > & {
+    isHydrating?: boolean;
+  }
+) {
+  const { onLoad, isHydrating } = props;
+  const theme = useThemeStore((store) =>
+    store.colorScheme === "dark" ? store.darkTheme : store.lightTheme
+  );
+  const doubleSpacedLines = useSettingsStore(
+    (store) => store.doubleSpacedParagraphs
+  );
+  const dateFormat = useSettingsStore((store) => store.dateFormat);
+  const timeFormat = useSettingsStore((store) => store.timeFormat);
+  const dayFormat = useSettingsStore((store) => store.dayFormat);
+  const markdownShortcuts = useSettingsStore(
+    (store) => store.markdownShortcuts
+  );
+  const fontLigatures = useSettingsStore((store) => store.fontLigatures);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const editorContainerRef = useRef<HTMLDivElement>();
+  const { editorConfig, setEditorConfig } = useEditorConfig();
+  const isMobile = useMobile();
+  const isTablet = useTablet();
+
+  useLayoutEffect(() => {
+    if (
+      !containerRef.current ||
+      !editorContainerRef.current ||
+      editorContainerRef.current.parentElement === containerRef.current
+    )
+      return;
+    containerRef.current.appendChild(editorContainerRef.current);
+  }, []);
+
+  useEffect(() => {
+    if (!editorContainerRef.current) return;
+    editorContainerRef.current.style.color =
+      theme.scopes.editor?.primary?.paragraph ||
+      theme.scopes.base.primary.paragraph;
+  }, [theme]);
+
+  useEffect(() => {
+    if (!isHydrating) {
+      onLoad?.();
+      containerRef.current
+        ?.querySelector(".editor-loading-container")
+        ?.classList.add("hidden");
+    }
+  }, [isHydrating]);
+
+  useEffect(() => {
+    if (!editorContainerRef.current) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      if (e.ctrlKey) {
+        if (e.deltaY === 0) return;
+
+        e.preventDefault();
+        const delta =
+          (e.deltaY > 0 && e.deltaY < 10) || (e.deltaY > -10 && e.deltaY < 0)
+            ? -e.deltaY
+            : e.deltaY > 0
+            ? -EDITOR_ZOOM.STEP
+            : EDITOR_ZOOM.STEP;
+        const zoom = Math.min(
+          EDITOR_ZOOM.MAX,
+          Math.max(EDITOR_ZOOM.MIN, Math.round(editorConfig.zoom + delta))
+        );
+        setEditorConfig({ zoom });
+      }
+    };
+    editorContainerRef.current.addEventListener("wheel", handleWheel);
+    return () => {
+      editorContainerRef.current?.removeEventListener("wheel", handleWheel);
+    };
+  }, [editorConfig.zoom]);
+
+  useEffect(() => {
+    if (editorContainerRef.current) {
+      editorContainerRef.current.spellcheck = props.spellcheck === true;
+    }
+  }, [props.spellcheck]);
+
+  useEffect(() => {
+    if (editorContainerRef.current) {
+      editorContainerRef.current.style.fontSize = `${editorConfig.fontSize}px`;
+    }
+  }, [editorConfig.fontSize]);
+
+  return (
+    <Flex
+      ref={containerRef}
+      sx={{
+        flex: 1,
+        flexDirection: "column",
+        ".tiptap.ProseMirror": { height: "100%" },
+        ".editor-container": {
+          opacity: isHydrating ? 0 : 1,
+          zoom: editorConfig.zoom + "%",
+          lineHeight: editorConfig.lineHeight
+        },
+        ".editor-loading-container.hidden": { display: "none" }
+      }}
+    >
+      <TipTap
+        key={`tiptap-${props.id}-${doubleSpacedLines}-${dateFormat}-${timeFormat}-${dayFormat}-${markdownShortcuts}-${fontLigatures}`}
+        {...props}
+        isMobile={isMobile}
+        isTablet={isTablet}
+        doubleSpacedLines={doubleSpacedLines}
+        dateFormat={dateFormat}
+        timeFormat={timeFormat}
+        dayFormat={dayFormat}
+        markdownShortcuts={markdownShortcuts}
+        fontLigatures={fontLigatures}
+        onLoad={(editor) => {
+          if (!isHydrating) {
+            onLoad?.(editor);
+            containerRef.current
+              ?.querySelector(".editor-loading-container")
+              ?.classList.add("hidden");
+          }
+        }}
+        editorContainer={() => {
+          if (editorContainerRef.current) return editorContainerRef.current;
+          const editorContainer = document.createElement("div");
+          editorContainer.classList.add("selectable", "editor-container");
+          editorContainer.style.flex = "1";
+          editorContainer.style.cursor = "text";
+          editorContainer.style.color =
+            theme.scopes.editor?.primary?.paragraph ||
+            theme.scopes.base.primary.paragraph;
+          editorContainer.style.fontSize = `${editorConfig.fontSize}px`;
+          editorContainer.style.fontFamily =
+            getFontById(editorConfig.fontFamily)?.font || "sans-serif";
+          editorContainer.tabIndex = -1;
+          editorContainer.spellcheck = props.spellcheck === true;
+          editorContainerRef.current = editorContainer;
+          return editorContainer;
+        }}
+        fontFamily={editorConfig.fontFamily}
+        fontSize={editorConfig.fontSize}
+      />
+      {props.children}
+      <Box className="editor-loading-container">
+        <Skeleton
+          enableAnimation={false}
+          height={22}
+          style={{ marginTop: 16 }}
+          count={2}
+        />
+        <Skeleton
+          enableAnimation={false}
+          height={22}
+          width={25}
+          style={{ marginTop: 16 }}
+        />
+      </Box>
+    </Flex>
+  );
+}
+export default TiptapWrapper;
+
+function toIEditor(editor: Editor): IEditor {
+  return {
+    focus: ({ position, scrollIntoView } = {}) => {
+      if (typeof position === "object")
+        editor.chain().focus().setTextSelection(position).run();
+      else
+        editor.commands.focus(position, {
+          scrollIntoView
+        });
+    },
+    undo: () => editor.commands.undo(),
+    redo: () => editor.commands.redo(),
+    updateContent: (content) => {
+      const { from, to } = editor.state.selection;
+      editor
+        ?.chain()
+        .command(({ tr }) => {
+          tr.setMeta("preventSave", true);
+          tr.setMeta("isUpdatingContent", true);
+          return true;
+        })
+        .setContent(content, false, { preserveWhitespace: true })
+        .setTextSelection({
+          from,
+          to
+        })
+        .run();
+    },
+    attachFiles: async (...files: Attachment[]) =>
+      editor.commands.insertAttachment(...files),
+    sendAttachmentProgress: (hash, progress) =>
+      editor.commands.updateAttachment(
+        {
+          progress
+        },
+        { query: (a) => a.hash === hash, preventUpdate: true }
+      ),
+    startSearch: () => editor.commands.startSearch(),
+    getContent: () =>
+      getHTMLFromFragment(editor.state.doc.content, editor.schema),
+    getSelection: () => {
+      const { from, to } = editor.state.selection;
+      return { from, to };
+    }
+  };
+}
+
+function getSelectedParagraphs(editor: Editor, selection: Selection): number {
+  let count = 0;
+  editor.state.doc.nodesBetween(selection.from, selection.to, (node) => {
+    if (node.type.name === "paragraph" && node.content.size > 0) {
+      count++;
+    }
+    return true;
+  });
+  return count;
+}
+
+function removeNewlineCharacters(text: string) {
+  return text.replaceAll(/\n/g, "");
+}

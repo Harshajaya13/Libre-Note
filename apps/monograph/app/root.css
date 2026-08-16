@@ -1,0 +1,89 @@
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: local(""), url("./assets/fonts/Inter-Regular.woff2") format("woff2"),
+    url("./assets/fonts/Inter-Regular.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: local(""), url("./assets/fonts/Inter-SemiBold.woff2") format("woff2"),
+    url("./assets/fonts/Inter-SemiBold.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: local(""), url("./assets/fonts/Inter-Bold.woff2") format("woff2"),
+    url("./assets/fonts/Inter-Bold.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: local(""), url("./assets/fonts/Inter-Medium.woff2") format("woff2"),
+    url("./assets/fonts/Inter-Medium.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Inter";
+  font-style: italic;
+  font-display: swap;
+  font-weight: 400;
+  src: local(""), url("./assets/fonts/Inter-Italic.woff2") format("woff2"),
+    url("./assets/fonts/Inter-Italic.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Inter";
+  font-style: italic;
+  font-display: swap;
+  font-weight: 600;
+  src: local(""),
+    url("./assets/fonts/Inter-SemiBoldItalic.woff2") format("woff2"),
+    url("./assets/fonts/Inter-SemiBoldItalic.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Inter";
+  font-style: italic;
+  font-display: swap;
+  font-weight: 700;
+  src: local(""), url("./assets/fonts/Inter-BoldItalic.woff2") format("woff2"),
+    url("./assets/fonts/Inter-BoldItalic.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Inter";
+  font-style: italic;
+  font-display: swap;
+  font-weight: 500;
+  src: local(""), url("./assets/fonts/Inter-MediumItalic.woff2") format("woff2"),
+    url("./assets/fonts/Inter-MediumItalic.ttf") format("truetype");
+}
+
+body {
+  margin: 0;
+  padding: 0;
+}
+
+::-moz-selection {
+  /* Code for Firefox */
+  background-color: var(--background-selected);
+  color: var(--paragraph-selected);
+}
+
+::selection {
+  background-color: var(--background-selected);
+  color: var(--paragraph-selected);
+}

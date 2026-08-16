@@ -1,0 +1,207 @@
+/*
+This file is part of the Notesnook project (https://notesnook.com/)
+
+Copyright (C) 2023 Streetwriters (Private) Limited
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+import ListItem from "../list-item";
+import { navigate } from "../../navigation";
+import { Flex, Text } from "@theme-ui/components";
+import { store as appStore } from "../../stores/app-store";
+import { store as settingStore } from "../../stores/setting-store";
+import { db } from "../../common/db";
+import {
+  Edit,
+  Shortcut,
+  DeleteForver,
+  Tag as TagIcon,
+  Copy,
+  InternalLink
+} from "../icons";
+import { MenuItem } from "@notesnook/ui";
+import { createInternalLink, Tag as TagType } from "@notesnook/core";
+import { handleDrop } from "../../common/drop-handler";
+import { EditTagDialog } from "../../dialogs/item-dialog";
+import { useStore as useSelectionStore } from "../../stores/selection-store";
+import { useStore as useNoteStore } from "../../stores/note-store";
+import { Multiselect } from "../../common/multi-select";
+import { strings } from "@notesnook/intl";
+import {
+  createSetDefaultHomepageMenuItem,
+  withFeatureCheck
+} from "../../common";
+import { areFeaturesAvailable } from "@notesnook/common";
+import { showToast } from "../../utils/toast";
+import { writeToClipboard } from "../../utils/clipboard";
+
+type TagProps = { item: TagType; totalNotes: number };
+function Tag(props: TagProps) {
+  const { item, totalNotes } = props;
+  const { id } = item;
+  const currentContext = useNoteStore((store) =>
+    store.context?.type === "tag" && store.context.id === id
+      ? store.contextNotes
+      : null
+  );
+  const isSelected = !!currentContext;
+
+  return (
+    <ListItem
+      item={item}
+      isCompact
+      isFocused={isSelected}
+      sx={{
+        borderRadius: "default",
+        mb: "small"
+      }}
+      title={
+        <Flex
+          sx={{ alignItems: "center", justifyContent: "center", gap: "small" }}
+        >
+          <TagIcon size={14} color={isSelected ? "icon-selected" : "icon"} />
+          <Text
+            data-test-id={`title`}
+            variant={"body"}
+            color={isSelected ? "paragraph-selected" : "paragraph"}
+            sx={{
+              whiteSpace: "pre",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              fontWeight: "body",
+              display: "block"
+            }}
+          >
+            {item.title}
+          </Text>
+        </Flex>
+      }
+      footer={
+        <Text mt={1} variant="subBody">
+          {currentContext?.length || totalNotes}
+        </Text>
+      }
+      onKeyPress={async (e) => {
+        if (e.key === "Delete") {
+          await Multiselect.deleteTags(
+            useSelectionStore.getState().selectedItems
+          );
+        } else if (e.key === "Enter") {
+          navigate(`/tags/${id}`);
+        }
+      }}
+      menuItems={tagMenuItems}
+      onClick={() => {
+        navigate(`/tags/${id}`);
+      }}
+      onDragEnter={(e) => {
+        e?.currentTarget.focus();
+      }}
+      onDrop={(e) => handleDrop(e.dataTransfer, item)}
+    />
+  );
+}
+export default Tag;
+
+export const tagMenuItems: (
+  tag: TagType,
+  ids?: string[]
+) => Promise<MenuItem[]> = async (tag, ids = []) => {
+  const defaultTag = db.settings.getDefaultTag();
+  const features = await areFeaturesAvailable([
+    "shortcuts",
+    "defaultNotebookAndTag",
+    "customHomepage"
+  ]);
+  return [
+    {
+      type: "button",
+      key: "edit",
+      title: strings.renameTag(),
+      icon: Edit.path,
+      onClick: () => EditTagDialog.show(tag)
+    },
+    {
+      type: "button",
+      key: "set-as-default",
+      title: strings.setAsDefault(),
+      isChecked: defaultTag === tag.id,
+      icon: TagIcon.path,
+      premium: !features.defaultNotebookAndTag.isAllowed,
+      onClick: withFeatureCheck(features.defaultNotebookAndTag, async () => {
+        const defaultTag = db.settings.getDefaultTag();
+        const isDefault = defaultTag === tag.id;
+        await db.settings.setDefaultTag(isDefault ? undefined : tag.id);
+      })
+    },
+    createSetDefaultHomepageMenuItem(tag.id, tag.type, features.customHomepage),
+    {
+      type: "button",
+      key: "shortcut",
+      title: db.shortcuts.exists(tag.id)
+        ? strings.removeShortcut()
+        : strings.addShortcut(),
+      icon: Shortcut.path,
+      premium: !features.shortcuts.isAllowed,
+      onClick: withFeatureCheck(features.shortcuts, () =>
+        appStore.addToShortcuts(tag)
+      )
+    },
+    {
+      type: "button",
+      key: "copy-link",
+      title: strings.copyLink(),
+      icon: InternalLink.path,
+      onClick: () => {
+        const link = createInternalLink("tag", tag.id);
+        writeToClipboard({
+          "text/plain": link,
+          "text/html": `<a href="${link}">${tag.title}</a>`,
+          "text/markdown": `[${tag.title}](${link})`
+        });
+      }
+    },
+    { key: "sep", type: "separator" },
+    {
+      type: "button",
+      key: "delete",
+      variant: "dangerous",
+      title: strings.delete(),
+      icon: DeleteForver.path,
+      onClick: async () => {
+        await Multiselect.deleteTags(ids);
+      },
+      multiSelect: true
+    },
+    {
+      type: "button",
+      key: "copyid",
+      title: "Copy ID",
+      icon: Copy.path,
+      onClick: async () => {
+        try {
+          await writeToClipboard({
+            "text/plain": tag.id
+          });
+          showToast("success", "Tag ID copied to clipboard");
+        } catch (e) {
+          console.error(e);
+          showToast("error", "Failed to copy Tag ID");
+        }
+      },
+      isHidden: !settingStore.get().isInboxEnabled
+    }
+  ];
+};

@@ -1,0 +1,443 @@
+/*
+This file is part of the Notesnook project (https://notesnook.com/)
+
+Copyright (C) 2023 Streetwriters (Private) Limited
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+import type { Locator, Page } from "@playwright/test";
+import { downloadAndReadFile, getTestId } from "../utils";
+import { ContextMenuModel } from "./context-menu.model";
+import { ToggleModel } from "./toggle.model";
+import { Color, Notebook } from "./types";
+import {
+  confirmDialog,
+  fillColorDialog,
+  fillNotebookDialog,
+  fillPasswordDialog,
+  fillReminderDialog,
+  iterateList
+} from "./utils";
+import { SessionHistoryItemModel } from "./session-history-item-model";
+import { Dayjs } from "dayjs";
+import { Reminder } from "@notesnook/core";
+
+abstract class BaseProperties {
+  protected readonly page: Page;
+
+  private readonly pinToggle: ToggleModel;
+  private readonly favoriteToggle: ToggleModel;
+  private readonly lockToggle: ToggleModel;
+  private readonly archiveToggle: ToggleModel;
+  private readonly spellcheckToggle: ToggleModel;
+
+  constructor(
+    page: Page,
+    protected readonly noteLocator: Locator,
+    private readonly itemPrefix: string
+  ) {
+    this.page = page;
+    this.pinToggle = new ToggleModel(
+      page,
+      page.locator(getTestId(`${itemPrefix}-pin`))
+    );
+    this.lockToggle = new ToggleModel(
+      page,
+      page.locator(getTestId(`${itemPrefix}-lock`))
+    );
+    this.favoriteToggle = new ToggleModel(
+      page,
+      page.locator(getTestId(`${itemPrefix}-favorite`))
+    );
+    this.archiveToggle = new ToggleModel(
+      page,
+      page.locator(getTestId(`${itemPrefix}-archive`))
+    );
+    this.spellcheckToggle = new ToggleModel(
+      page,
+      page.locator(getTestId(`${itemPrefix}-spellcheck`))
+    );
+  }
+
+  async isPinned() {
+    await this.open();
+    const state = await this.pinToggle.isToggled();
+    await this.close();
+    return state;
+  }
+
+  async pin() {
+    await this.open();
+    await this.pinToggle.on();
+    await this.close();
+  }
+
+  async unpin() {
+    await this.open();
+    await this.pinToggle.off();
+    await this.close();
+  }
+
+  async lock(password: string) {
+    await this.open();
+    await this.lockToggle.on(false);
+    await fillPasswordDialog(this.page, password);
+    await this.noteLocator
+      .locator(getTestId("locked"))
+      .waitFor({ state: "visible" });
+  }
+
+  async unlock(password: string) {
+    await this.open();
+    await this.lockToggle.off(false);
+
+    await fillPasswordDialog(this.page, password);
+
+    await this.noteLocator
+      .locator(getTestId("locked"))
+      .waitFor({ state: "hidden" });
+  }
+
+  async isLocked() {
+    return (
+      (await this.noteLocator.locator(getTestId("locked")).isVisible()) &&
+      (await this.noteLocator.locator(getTestId(`description`)).isHidden()) &&
+      // (await (async () => {
+      //   await this.noteLocator.click();
+      //   return await this.page
+      //     .locator(getTestId("unlock-note-title"))
+      //     .isVisible();
+      // })()) &&
+      (await (async () => {
+        await this.open();
+        const state = await this.lockToggle.isToggled();
+        await this.close();
+        return state;
+      })())
+    );
+  }
+
+  async isFavorited() {
+    await this.open();
+    const state = await this.favoriteToggle.isToggled();
+    await this.close();
+    return state;
+  }
+
+  async favorite() {
+    await this.open();
+    await this.favoriteToggle.on();
+    await this.close();
+  }
+
+  async unfavorite() {
+    await this.open();
+    await this.favoriteToggle.off();
+    await this.close();
+  }
+
+  async isArchived() {
+    await this.open();
+    const state = await this.archiveToggle.isToggled();
+    await this.close();
+    return state;
+  }
+
+  async archive() {
+    await this.open();
+    await this.archiveToggle.on();
+    await this.close();
+  }
+
+  async unarchive() {
+    await this.open();
+    await this.archiveToggle.off();
+    await this.close();
+  }
+
+  async isSpellcheckEnabled() {
+    await this.open();
+    const state = await this.spellcheckToggle.isToggled();
+    await this.close();
+    return state;
+  }
+
+  abstract isColored(color: string): Promise<boolean>;
+  abstract color(color: string): Promise<void>;
+  abstract open(): Promise<void>;
+  abstract close(): Promise<void>;
+}
+
+export class NotePropertiesModel extends BaseProperties {
+  private readonly propertiesButton: Locator;
+  private readonly generalSection: Locator;
+  private readonly readonlyToggle: ToggleModel;
+  private readonly sessionItems: Locator;
+
+  constructor(page: Page, noteLocator: Locator) {
+    super(page, noteLocator, "properties");
+    this.propertiesButton = page.locator(getTestId("Properties"));
+    this.generalSection = page.locator(getTestId("general-section"));
+    this.readonlyToggle = new ToggleModel(
+      page,
+      page.locator(getTestId(`properties-readonly`))
+    );
+    this.sessionItems = page.locator(getTestId("session-item"));
+  }
+
+  async isColored(color: string): Promise<boolean> {
+    await this.open();
+    const state = await new ToggleModel(
+      this.page,
+      this.page.locator(getTestId(`properties-${color}`))
+    ).isToggled();
+    await this.close();
+    return state;
+  }
+
+  async color(color: string) {
+    await this.open();
+    await new ToggleModel(
+      this.page,
+      this.page.locator(getTestId(`properties-${color}`))
+    ).on();
+    await this.close();
+  }
+
+  async isReadonly() {
+    await this.open();
+    const state = await this.readonlyToggle.isToggled();
+    await this.close();
+    return state;
+  }
+
+  async readonly() {
+    await this.open();
+    await this.readonlyToggle.on();
+    await this.close();
+  }
+
+  async editable() {
+    await this.open();
+    await this.readonlyToggle.off();
+    await this.close();
+  }
+
+  async open() {
+    await this.propertiesButton.click();
+    await this.generalSection.waitFor();
+  }
+
+  async close() {
+    await this.propertiesButton.click();
+  }
+
+  async getSessionHistory() {
+    await this.open();
+    await this.sessionItems.first().waitFor();
+
+    const history: SessionHistoryItemModel[] = [];
+    for await (const item of iterateList(this.sessionItems)) {
+      history.push(new SessionHistoryItemModel(this, item));
+    }
+    await this.close();
+    return history;
+  }
+
+  async getDateCreated() {
+    await this.open();
+    const dateCreated = await this.generalSection
+      .locator(getTestId("date-created"))
+      .textContent();
+    await this.close();
+    return dateCreated;
+  }
+
+  async editDateCreated(date: Dayjs) {
+    await this.open();
+
+    const editIcon = this.page.locator(getTestId("edit-date-created"));
+    await editIcon.click();
+
+    const editDateCreatedDialog = this.page.locator(
+      getTestId("edit-note-creation-date-dialog")
+    );
+    await editDateCreatedDialog.waitFor({ state: "visible" });
+
+    const dateInput = editDateCreatedDialog.locator(
+      getTestId("date-created-input")
+    );
+    const timeInput = editDateCreatedDialog.locator(
+      getTestId("time-created-input")
+    );
+
+    await dateInput.fill(date.format("DD-MM-YYYY"));
+    await timeInput.fill(date.format("hh:mm A"));
+
+    await confirmDialog(editDateCreatedDialog);
+
+    await this.close();
+  }
+}
+
+export class NoteContextMenuModel extends BaseProperties {
+  private readonly menu: ContextMenuModel;
+  constructor(page: Page, noteLocator: Locator) {
+    super(page, noteLocator, "menu-button");
+    this.menu = new ContextMenuModel(page);
+  }
+
+  async openInNewTab() {
+    await this.open();
+    await this.menu.clickOnItem("openinnewtab");
+  }
+
+  async isColored(color: string): Promise<boolean> {
+    await this.open();
+    await this.menu.clickOnItem("colors");
+    const state = await new ToggleModel(
+      this.page,
+      this.menu.getItemByText(color)
+    ).isToggled();
+    await this.close();
+    return state;
+  }
+
+  async color(color: string) {
+    await this.open();
+    await this.menu.clickOnItem("colors");
+    await new ToggleModel(this.page, this.menu.getItemByText(color)).on();
+    await this.close();
+  }
+
+  async uncolor(color: string) {
+    await this.open();
+    await this.menu.clickOnItem("colors");
+    await new ToggleModel(this.page, this.menu.getItemByText(color)).off();
+    await this.close();
+  }
+
+  async newColor(color: Color) {
+    await this.open();
+    await this.menu.clickOnItem("colors");
+    // await new ToggleModel(
+    //   this.page,
+    //   this.page.locator(getTestId(`menu-button-new-color`))
+    // ).on();
+    await this.menu.getItemByText("add color").click();
+    await fillColorDialog(this.page, color);
+  }
+
+  async moveToTrash() {
+    await this.open();
+    await Promise.all([
+      this.menu.clickOnItem("movetotrash"),
+      this.noteLocator.waitFor({ state: "detached" })
+    ]);
+  }
+
+  async export(format: "html" | "md" | "txt") {
+    await this.open();
+    await this.menu.clickOnItem("export");
+
+    const content = (await downloadAndReadFile(
+      this.noteLocator.page(),
+      () => this.menu.getItem(format).click(),
+      "utf-8"
+    )) as string;
+
+    if (format === "html") {
+      return content
+        .replace(/(name="created-at" content=")(.+?)"/, '$1xxx"')
+        .replace(/(name="updated-at" content=")(.+?)"/, '$1xxx"')
+        .replace(/(data-block-id=")(.+?)"/gm, '$1xxx"');
+    }
+    return content;
+  }
+
+  async addToNotebook(notebook: Notebook) {
+    async function addSubNotebooks(
+      page: Page,
+      dialog: Locator,
+      item: Locator,
+      notebook: Notebook
+    ) {
+      if (notebook.subNotebooks) {
+        const addSubNotebookButton = item.locator(
+          getTestId("add-sub-notebook")
+        );
+        for (const subNotebook of notebook.subNotebooks) {
+          await addSubNotebookButton.click();
+
+          await fillNotebookDialog(page, subNotebook);
+
+          const subNotebookItem = dialog.locator(getTestId("notebook"), {
+            hasText: subNotebook.title
+          });
+          await subNotebookItem.waitFor();
+
+          await page.keyboard.down("ControlOrMeta");
+          await subNotebookItem.click();
+          await page.keyboard.up("ControlOrMeta");
+
+          await addSubNotebooks(page, dialog, subNotebookItem, subNotebook);
+        }
+      }
+    }
+
+    await this.open();
+
+    await this.menu.clickOnItem("notebooks");
+    await this.menu.clickOnItem("link-notebooks");
+
+    const dialog = this.page.locator(getTestId("move-note-dialog"));
+
+    await dialog.locator(getTestId("add-new-notebook")).click();
+
+    await fillNotebookDialog(this.page, notebook);
+
+    const notebookItem = dialog.locator(getTestId("notebook"), {
+      hasText: notebook.title
+    });
+
+    await notebookItem.waitFor({ state: "visible" });
+
+    await this.page.keyboard.down("ControlOrMeta");
+    await notebookItem.click();
+    await this.page.keyboard.up("ControlOrMeta");
+
+    await addSubNotebooks(this.page, dialog, notebookItem, notebook);
+
+    await confirmDialog(dialog);
+  }
+
+  async addReminder(reminder: Partial<Reminder>) {
+    await this.open();
+    await this.menu.clickOnItem("remind-me");
+    await fillReminderDialog(this.page, reminder);
+  }
+
+  async open() {
+    await this.menu.open(this.noteLocator);
+  }
+
+  async close() {
+    await this.menu.close();
+  }
+
+  title() {
+    return this.menu.title();
+  }
+}

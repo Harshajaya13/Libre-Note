@@ -1,0 +1,126 @@
+name: Publish @notesnook/ios
+
+on: workflow_dispatch
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: ./.github/actions/setup-node-with-cache
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "26.1.1"
+
+      - name: Setup iOS Platform
+        run: |
+          xcodebuild -downloadPlatform iOS -exportPath ~/Downloads
+          xcodebuild -importPlatform ~/Downloads/iphonesimulator_26.1_23B86.dmg
+
+      - name: Install node modules
+        run: |
+          npm ci --ignore-scripts --prefer-offline --no-audit
+          npm run bootstrap -- --scope=mobile
+
+      - name: Build packages
+        run: npm run tx @notesnook/mobile:build
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2.11
+        with:
+          key: ${{ runner.os }}-ccache-${{ hashFiles(format('apps/mobile/ios/Podfile.lock')) }}
+          max-size: 1500M
+          restore-keys: |
+            ${{ runner.os }}-ccache-
+
+      - name: Setup ccache
+        run: |
+          ccache --set-config=base_dir=$PWD
+          ccache --set-config=inode_cache=true
+          ccache --set-config=compiler_check=content
+          ccache --set-config=depend_mode=true
+          ccache --set-config=file_clone=true
+          ccache --set-config=sloppiness=clang_index_store,file_stat_matches,include_file_ctime,include_file_mtime,ivfsoverlay,pch_defines,modules,system_headers,time_macros
+          ln -s $(which ccache) /usr/local/bin/gcc
+          ln -s $(which ccache) /usr/local/bin/g++
+          ln -s $(which ccache) /usr/local/bin/cc
+          ln -s $(which ccache) /usr/local/bin/c++
+          ln -s $(which ccache) /usr/local/bin/clang
+          ln -s $(which ccache) /usr/local/bin/clang++
+          ccache -p
+
+      - name: Cache Pods
+        uses: actions/cache@v3
+        id: pods-cache
+        with:
+          path: apps/mobile/ios/Pods
+          key: ${{ runner.os }}-pods-${{ hashFiles('apps/mobile/ios/Podfile.lock') }}
+
+      - name: Install Pods
+        run: |
+          cd apps/mobile/ios
+          pod install
+
+      - name: Check for typescript errors
+        run: |
+          npm run tx mobile:build
+          cd apps/mobile
+          npx tsc --noEmit
+
+      - name: CCache Stats Before Build
+        run: ccache -sv
+
+      - name: Build iOS App
+        uses: ammarahm-ed/ios-build-action@master
+        with:
+          bundle-identifier: org.streetwriters.notesnook
+          scheme: Notesnook
+          configuration: "Release"
+          export-options: apps/mobile/ios/ExportOptions.plist
+          project-path: apps/mobile/ios/Notesnook.xcodeproj
+          workspace-path: apps/mobile/ios/Notesnook.xcworkspace
+          update-targets: |
+            Notesnook
+            Make Note
+            NotesWidgetExtension
+          disable-targets: Notesnook-tvOS,Notesnook-tvOSTests,NotesnookTests
+          code-signing-identity: Apple Distribution
+          team-id: ${{ secrets.APPLE_TEAM_ID }}
+          p12-base64: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          certificate-password: ${{ secrets.APPLE_CERTIFICATE_P12_PASSWORD }}
+          app-store-connect-api-key-issuer-id: ${{ secrets.API_KEY_ISSUER_ID }}
+          app-store-connect-api-key-id: ${{ secrets.APPSTORE_KEY_ID }}
+          app-store-connect-api-key-base64: ${{ secrets.APPSTORE_CONNECT_API_KEY_BASE64 }}
+          output-path: Notesnook.ipa
+          mobileprovision-base64: |
+            ${{ secrets.APPLE_MOBILE_PROVISION_APP }}
+            ${{ secrets.APPLE_MOBILE_PROVISION_SHARE }}
+            ${{ secrets.APPLE_MOBILE_PROVISION_WIDGET }}
+
+      - name: CCache Stats After Build
+        run: ccache -sv
+
+      - name: "Upload app to TestFlight"
+        uses: apple-actions/upload-testflight-build@v1
+        with:
+          app-path: Notesnook.ipa
+          issuer-id: ${{ secrets.API_KEY_ISSUER_ID }}
+          api-key-id: ${{ secrets.API_KEY_ID }}
+          api-private-key: ${{ secrets.API_KEY }}
+
+      - name: Upload Notesnook.ipa to Github
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: Notesnook.zip
+          path: |
+            Notesnook.ipa
+            apps/mobile/ios/**/*.map
+            packages/editor-mobile/sourcemaps/*.map

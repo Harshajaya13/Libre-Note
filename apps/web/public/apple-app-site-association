@@ -1,0 +1,22 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appID": "53CWBG3QUC.org.streetwriters.notesnook",
+        "paths": [
+          "*",
+          "/account/verified"
+        ],
+        "components": [
+          {
+            "/": "/account/verified"
+          },
+          {
+            "/": "*"
+          }
+        ]
+      }
+    ]
+  }
+}

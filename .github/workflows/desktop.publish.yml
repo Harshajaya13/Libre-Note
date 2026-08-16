@@ -1,0 +1,430 @@
+name: Publish @notesnook/desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish-apple:
+        type: boolean
+        required: true
+        default: true
+        description: "Publish on Mac App Store?"
+      publish-snap:
+        type: boolean
+        required: true
+        default: true
+        description: "Publish on Snapcraft?"
+      publish-github:
+        type: boolean
+        required: true
+        default: true
+        description: "Publish on GitHub releases?"
+      build-windows:
+        type: boolean
+        required: true
+        default: true
+        description: "Build for Windows?"
+      build-linux:
+        type: boolean
+        required: true
+        default: true
+        description: "Build for Linux?"
+      build-mac:
+        type: boolean
+        required: true
+        default: true
+        description: "Build for macOS?"
+      release-track:
+        type: choice
+        required: true
+        default: stable
+        description: "Select the release track"
+        options:
+          - stable
+          - beta
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: ./.github/actions/setup-node-with-cache
+
+      - name: Install packages
+        run: |
+          npm ci --ignore-scripts --prefer-offline --no-audit
+          npm run bootstrap -- --scope=web
+          npm run bootstrap -- --scope=desktop
+
+      - name: Install sqlite-better-trigram for all arch
+        run: |
+          npm i --cpu arm64 sqlite-better-trigram
+          npm i --cpu x64 sqlite-better-trigram
+        working-directory: ./apps/desktop
+
+      - name: Generate desktop build (stable)
+        if: ${{ inputs.release-track == 'stable' }}
+        run: npm run tx @notesnook/web:build:desktop
+
+      - name: Generate desktop build (beta)
+        if: ${{ inputs.release-track == 'beta' }}
+        run: BETA=true npm run tx @notesnook/web:build:desktop
+
+      - name: Build desktop bundle
+        working-directory: ./apps/desktop
+        run: npm run bundle
+
+      - name: Archive build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build
+          path: apps/web/build/**/*
+
+      - name: Collect app metadata
+        id: app_metadata
+        working-directory: ./apps/desktop
+        run: |
+          echo ::set-output name=app_version::$(cat package.json | jq -r .version)
+
+      - name: Package desktop build
+        run: |
+          cp -r ./apps/web/build ./apps/desktop/
+          zip -r ./notesnook_build_v${{ steps.app_metadata.outputs.app_version }}.zip ./apps/desktop/build/
+          echo "Build folder archived to ./notesnook_build_v${{ steps.app_metadata.outputs.app_version }}.zip"
+
+      - name: Upload desktop build
+        uses: softprops/action-gh-release@v1
+        if: inputs.publish-github
+        with:
+          draft: true
+          name: Notesnook Desktop v${{ steps.app_metadata.outputs.app_version }}
+          tag_name: v${{ steps.app_metadata.outputs.app_version }}
+          files: ./notesnook_build_v${{ steps.app_metadata.outputs.app_version }}.zip
+          prerelease: ${{ inputs.release-track == 'beta' }}
+          target_commitish: ${{ github.ref }}
+
+      - name: Generate flatpak sources
+        if: inputs.build-linux
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --quiet flatpak flatpak-builder pipx
+          git clone https://github.com/flatpak/flatpak-builder-tools.git /tmp/flatpak-builder-tools
+          cd /tmp/flatpak-builder-tools/node
+          pipx install .
+          cd -
+          node scripts/generate-sources.mjs
+
+      - name: Upload flatpak sources
+        uses: softprops/action-gh-release@v1
+        if: inputs.publish-github && inputs.build-linux
+        with:
+          draft: true
+          name: Notesnook Desktop v${{ steps.app_metadata.outputs.app_version }}
+          tag_name: v${{ steps.app_metadata.outputs.app_version }}
+          files: ./generated-sources.json
+          prerelease: ${{ endsWith(steps.app_metadata.outputs.app_version, '-beta') }}
+
+      - name: Upload generated-sources.json as artifact
+        uses: actions/upload-artifact@v4
+        if: inputs.build-linux
+        with:
+          name: generated-sources
+          path: ./generated-sources.json
+
+  build-macos:
+    name: Build for macOS
+    needs: build
+    if: inputs.build-mac
+    runs-on: macos-14
+
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: ./.github/actions/setup-node-with-cache
+
+      - name: Install setuptools
+        run: brew install python-setuptools
+
+      - name: Setup notarization
+        run: |
+          mkdir -p ~/private_keys/
+          echo '${{ secrets.api_key }}' > ~/private_keys/AuthKey_${{ secrets.api_key_id }}.p8
+
+      - name: Collect app metadata
+        id: app_metadata
+        working-directory: ./apps/desktop
+        run: |
+          echo ::set-output name=apple_app_id::$(cat package.json | jq -r .appAppleId)
+          echo ::set-output name=app_bundle_id::$(cat package.json | jq -r .build.appId)
+          echo ::set-output name=app_version::$(cat package.json | jq -r .version)
+          echo ::set-output name=bundle_version::$(cat package.json | jq -r .build.mac.bundleVersion)
+
+      - name: Get App Store Version
+        id: appstore
+        uses: streetwriters/appstore-connect-app-version@develop
+        if: inputs.publish-apple
+        with:
+          app-id: ${{ steps.app_metadata.outputs.apple_app_id }}
+          key-id: ${{ secrets.api_key_id }}
+          issuer-id: ${{ secrets.api_key_issuer_id }}
+          private-key-raw: ${{ secrets.api_key }}
+          platform: "MAC_OS"
+
+      - name: Download build
+        uses: actions/download-artifact@v4
+        with:
+          name: build
+          path: ./apps/web/build
+
+      - name: Install packages
+        run: |
+          npm ci --ignore-scripts --prefer-offline --no-audit
+          npm run bootstrap -- --scope=desktop
+
+      - name: Install sqlite-better-trigram for all arch
+        run: |
+          npm i --cpu arm64 sqlite-better-trigram
+          npm i --cpu arm64 sqlite3-fts5-html
+          npm i --cpu x64 sqlite-better-trigram
+          npm i --cpu x64 sqlite3-fts5-html
+        working-directory: ./apps/desktop
+
+      - name: Install provisioning profile
+        run: echo "${{ secrets.MAC_PROVISIONING_PROFILE }}" | base64 --decode > embedded.provisionprofile
+        working-directory: ./apps/desktop
+
+      - name: Build app for Mac App Store
+        if: inputs.publish-apple && steps.appstore.outputs.app-version-latest != steps.app_metadata.outputs.app_version
+        env:
+          CSC_LINK: ${{ secrets.mac_certs }}
+          CSC_KEY_PASSWORD: ${{ secrets.mac_certs_password }}
+        run: |
+          npm run tx @notesnook/desktop:release -- --variant=mas
+          cd apps/desktop
+          yarn electron-builder --config=electron-builder.config.js --mac mas --universal -p never
+
+      - name: Build zip and dmg
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.mac_certs }}
+          CSC_KEY_PASSWORD: ${{ secrets.mac_certs_password }}
+          APPLE_API_KEY: ~/private_keys/AuthKey_${{ secrets.api_key_id }}.p8
+          APPLE_API_KEY_ID: ${{ secrets.api_key_id }}
+          APPLE_API_ISSUER: ${{ secrets.api_key_issuer_id }}
+        run: |
+          npm run tx @notesnook/desktop:release
+          cd apps/desktop
+          if [ ${{ inputs.publish-github }} == true ]; then
+            yarn electron-builder --config=electron-builder.config.js --mac zip dmg --arm64 --x64 -p always
+          else
+            yarn electron-builder --config=electron-builder.config.js --mac zip dmg --arm64 --x64 -p never
+          fi
+
+      - name: Deploy to Testflight
+        if: inputs.publish-apple && steps.appstore.outputs.app-version-latest != steps.app_metadata.outputs.app_version
+        env:
+          API_KEY_ID: ${{ secrets.api_key_id }}
+          API_KEY_ISSUER_ID: ${{ secrets.api_key_issuer_id }}
+        run: |
+          package=$(find ./output/mas-universal/notesnook*.pkg)
+
+          echo "Uploading ${package} using altool..."
+
+          xcrun altool --upload-package $package -t osx --apiKey $API_KEY_ID --apiIssuer $API_KEY_ISSUER_ID --apple-id ${{ steps.app_metadata.outputs.apple_app_id }} --bundle-id ${{ steps.app_metadata.outputs.app_bundle_id }} --bundle-short-version-string ${{ steps.app_metadata.outputs.app_version }} --bundle-version ${{ steps.app_metadata.outputs.bundle_version }}
+        working-directory: ./apps/desktop
+
+  build-linux-x64:
+    name: Build for Linux x64
+    needs: build
+    if: inputs.build-linux
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: ./.github/actions/setup-node-with-cache
+
+      - name: Setup Snapcraft Auth
+        if: inputs.publish-snap
+        run: echo "SNAPCRAFT_STORE_CREDENTIALS=${{ secrets.snapcraft_token }}" >> $GITHUB_ENV
+
+      - name: Install Snapcraft
+        uses: samuelmeuli/action-snapcraft@v3
+        if: inputs.publish-snap
+
+      - name: Download build
+        uses: actions/download-artifact@v4
+        with:
+          name: build
+          path: ./apps/web/build
+
+      - name: Install packages
+        run: |
+          npm ci --ignore-scripts --prefer-offline --no-audit
+          npm run bootstrap -- --scope=desktop
+
+      - name: Install sqlite-better-trigram for all arch
+        run: |
+          npm i --cpu x64 sqlite-better-trigram
+          npm i --cpu x64 sqlite3-fts5-html
+        working-directory: ./apps/desktop
+
+      - name: Build Electron wrapper
+        run: npm run tx @notesnook/desktop:release
+
+      - name: Build snap
+        if: inputs.publish-snap
+        run: |
+          yarn electron-builder --config=electron-builder.config.js --linux snap:x64 -p never
+        working-directory: ./apps/desktop
+
+      - name: Build AppImage
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ ${{ inputs.publish-github }} == true ]; then
+            yarn electron-builder --config=electron-builder.config.js --linux AppImage:x64 -p always
+          else
+            yarn electron-builder --config=electron-builder.config.js --linux AppImage:x64 -p never
+          fi
+        working-directory: ./apps/desktop
+
+      - name: Publish on Snapcraft
+        if: inputs.publish-snap
+        run: |
+          if [ ${{ inputs.release-track }} == 'beta' ]; then
+            snapcraft upload --release=beta ./output/notesnook_linux_amd64.snap
+          else
+            snapcraft upload --release=stable ./output/notesnook_linux_amd64.snap
+          fi
+        working-directory: ./apps/desktop
+
+  build-linux-arm64:
+    name: Build for Linux arm64
+    needs: build
+    if: inputs.build-linux
+    runs-on: ubuntu-22.04-arm
+
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: ./.github/actions/setup-node-with-cache
+
+      # - name: Setup Snapcraft Auth
+      #   if: inputs.publish-snap
+      #   run: echo "SNAPCRAFT_STORE_CREDENTIALS=${{ secrets.snapcraft_token }}" >> $GITHUB_ENV
+
+      # - name: Install Snapcraft
+      #   uses: samuelmeuli/action-snapcraft@v1
+      #   if: inputs.publish-snap
+
+      - name: Download build
+        uses: actions/download-artifact@v4
+        with:
+          name: build
+          path: ./apps/web/build
+
+      - name: Install packages
+        run: |
+          npm ci --ignore-scripts --prefer-offline --no-audit
+          npm run bootstrap -- --scope=desktop
+
+      - name: Install sqlite-better-trigram for all arch
+        run: |
+          npm i --cpu arm64 sqlite-better-trigram
+          npm i --cpu arm64 sqlite3-fts5-html
+        working-directory: ./apps/desktop
+
+      - name: Build Electron wrapper
+        run: npm run tx @notesnook/desktop:release
+
+      # - name: Build snap
+      #   if: inputs.publish-snap
+      #   run: |
+      #     yarn electron-builder --config=electron-builder.config.js --linux snap:arm64 -p never
+      #   working-directory: ./apps/desktop
+
+      - name: Build AppImage
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ ${{ inputs.publish-github }} == true ]; then
+            yarn electron-builder --config=electron-builder.config.js --linux AppImage:arm64 -p always
+          else
+            yarn electron-builder --config=electron-builder.config.js --linux AppImage:arm64 -p never
+          fi
+        working-directory: ./apps/desktop
+
+      # - name: Publish on Snapcraft
+      #   if: inputs.publish-snap
+      #   run: |
+      #     snapcraft upload --release=stable ./output/notesnook_linux_arm64.snap
+      #   working-directory: ./apps/desktop
+
+  build-windows:
+    name: Build for Windows
+    needs: build
+    if: inputs.build-windows
+    runs-on: windows-2022
+
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@v5
+
+      - name: Setup .NET Core SDK
+        uses: actions/setup-dotnet@v2
+        with:
+          dotnet-version: 6.0.x
+
+      - name: Install TrustedSigning
+        run: Install-Module -Name TrustedSigning -RequiredVersion 0.3.15 -Force -Repository PSGallery
+        shell: pwsh
+
+      - name: Setup Node
+        uses: ./.github/actions/setup-node-with-cache
+
+      - name: Download build
+        uses: actions/download-artifact@v4
+        with:
+          name: build
+          path: ./apps/web/build
+
+      - name: Install packages
+        run: |
+          npm ci --ignore-scripts --prefer-offline --no-audit
+          npm run bootstrap -- --scope=desktop
+
+      - name: Install sqlite-better-trigram for all arch
+        run: |
+          npm i --cpu arm64 sqlite-better-trigram
+          npm i --cpu x64 sqlite-better-trigram
+
+          npm i --cpu arm64 sqlite3-fts5-html
+          npm i --cpu x64 sqlite3-fts5-html
+        working-directory: ./apps/desktop
+
+      - name: Build
+        run: node scripts/execute.mjs @notesnook/desktop:release
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: |
+          if ($${{ inputs.publish-github }} -eq $true) {
+            yarn electron-builder --config=electron-builder.config.js --win --publish always
+          } else {
+            yarn electron-builder --config=electron-builder.config.js --win --publish never
+          }
+        working-directory: ./apps/desktop
