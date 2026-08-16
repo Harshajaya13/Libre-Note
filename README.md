@@ -1,20 +1,26 @@
 <p align="center">
-<img style="align:center;" src="./resources/icon.png" alt="Notesnook Logo" width="100" />
+<img style="align:center;" src="./resources/icon.png" alt="Libre Notes Logo" width="100" />
 </p>
 
-<h1 align="center">Notesnook</h1>
-<h3 align="center">An end-to-end encrypted note taking alternative to Evernote.</h3>
-<p align="center">
-<a href="https://notesnook.com/">Website</a> | <a href="https://notesnook.com/about">About us</a> | <a href="https://notesnook.com/roadmap">Roadmap</a> | <a href="https://notesnook.com/downloads">Downloads</a> | <a href="https://twitter.com/@notesnook">Twitter</a> | <a href="https://discord.gg/5davZnhw3V">Discord</a>
-</p>
+<h1 align="center">Libre Notes</h1>
+<h3 align="center">A clean, local-first, and completely unrestricted fork of Notesnook.</h3>
 
-## Overview
+## Why was Libre Notes created?
 
-Notesnook is a free (as in speech) & open-source note-taking app focused on user privacy & ease of use. To ensure zero knowledge principles, Notesnook encrypts everything on your device using `XChaCha20-Poly1305` & `Argon2`.
+You might be wondering: *"Why does this exist when Notesnook already has their own site and app?"*
 
-Notesnook is our **proof** that privacy does _not_ (always) have to come at the cost of convenience. We aim to provide users peace of mind & 100% confidence that their notes are safe and secure. The decision to go fully open source is one of the most crucial steps towards that.
+**The answer is simple: to provide a completely stripped-down, unrestricted, and telemetry-free experience.**
+Libre Notes was created to take the brilliant foundation of Notesnook and modify it to remove all premium limits, sync requirements, workspaces, marketing integrations, and paywalls. We wanted a completely local-first version where you have 100% control over your data without any restrictions, pop-ups, or subscriptions.
 
-This repository contains all the code required to build & use the Notesnook web, desktop & mobile clients. If you are looking for a full feature list or screenshots, please check the [website](https://notesnook.com/).
+## A Massive Thank You to the Original Developers ❤️
+
+**We need to take a moment to praise the absolute legends at [Streetwriters/Notesnook](https://github.com/streetwriters/notesnook).** 
+
+The original developers of Notesnook are the *real workers* here. They spent years building an incredibly robust, secure, and beautiful end-to-end encrypted note-taking application. Their dedication to privacy and their decision to open-source their hard work is what makes Libre Notes possible. 
+
+They did the heavy lifting, the late nights, and the brilliant engineering. We just tweaked the UI and removed the limits. **Please support the original developers** if you can, because their work is truly peak software engineering. You can find their official project at [notesnook.com](https://notesnook.com/).
+
+---
 
 ## Developer guide
 
@@ -50,22 +56,4 @@ Notesnook is built using the following technologies:
 
 ### Contributing guidelines
 
-If you are interested in contributing to Notesnook, I highly recommend checking out the [contributing guidelines](/CONTRIBUTING.md). You'll find all the relevant information such as [style guideline](/CONTRIBUTING.md#style-guidelines), [how to make a PR](/CONTRIBUTING.md#opening--submitting-a-pull-request), [how to commit](/CONTRIBUTING.md#commit-guidelines) etc., there.
-
-### Support & help
-
-You can reach out to us via:
-
-1. [Email](mailto:support@streetwriters.co)
-2. [Discord](https://discord.gg/5davZnhw3V)
-3. [Twitter](https://twitter.com/notesnook)
-4. [Create an issue](https://github.com/streetwriters/notesnook/issues/new)
-
-We take all queries, issues and bug reports that you might have. Feel free to ask.
-
-## Additional Resources
-
-- [Migrating & Importing your data from other apps — Importer](https://notesnook.com/help/importing-notes)
-- [Privacy policy](https://notesnook.com/privacy) & [Terms of service](https://notesnook.com/terms)
-- [Verify Notesnook encryption claims yourself — Vericrypt](https://vericrypt.notesnook.com/)
-- [Why Notesnook requires an email address?](https://blog.notesnook.com/why-notesnook-requires-an-email-address/)
+If you are interested in contributing, I highly recommend checking out the [contributing guidelines](/CONTRIBUTING.md). You'll find all the relevant information such as [style guideline](/CONTRIBUTING.md#style-guidelines), [how to make a PR](/CONTRIBUTING.md#opening--submitting-a-pull-request), [how to commit](/CONTRIBUTING.md#commit-guidelines) etc., there.

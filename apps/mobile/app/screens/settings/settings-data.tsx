@@ -287,7 +287,7 @@ export const settingsGroups: SettingSection[] = [
 
         id: "hermes",
         name: "Libre Notes Repository",
-        icon: "application",
+        icon: "github",
         description: "Open Libre Notes repository (github.com/Harshajaya13/Libre-Note)",
         modifer: async () => {
           try {
@@ -545,26 +545,7 @@ export const settingsGroups: SettingSection[] = [
     id: "privacy-security",
     name: strings.privacyAndSecurity(),
     sections: [
-      {
-        id: "marketing-emails",
-        type: "switch",
-        icon: "email-newsletter",
-        name: strings.marketingEmails(),
-        description: strings.marketingEmailsDesc(),
-        modifer: async () => {
-          try {
-            await db.user?.changeMarketingConsent(
-              !useUserStore.getState().user?.marketingConsent
-            );
-            useUserStore.getState().setUser(await db.user?.fetchUser());
-          } catch (e) {
-            ToastManager.error(e as Error);
-          }
-        },
-        getter: (current: any) => current?.marketingConsent,
-        useHook: () => useUserStore((state) => state.user),
-        hidden: (current) => !current
-      },
+
       {
         id: "cors-bypass",
         type: "input",
